@@ -1,0 +1,14 @@
+__pycache__/
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+.env
+*.pyc
+*.pyo
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+node_modules/
+/data/
+.runtime/

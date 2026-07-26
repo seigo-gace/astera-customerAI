@@ -1,0 +1,10 @@
+{
+  "name": "astera-customer-ai-v8-runtime",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=22.0.0"},
+  "scripts": {
+    "test": "node --test v8/test/*.test.mjs"
+  }
+}
