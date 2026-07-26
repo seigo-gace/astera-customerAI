@@ -1,105 +1,103 @@
 import net from "node:net";
 import fs from "node:fs";
-import { WorkerPool } from "./worker-pool.mjs";
 
 const socketPath = process.env.CUSTOMER_AI_NODE_SOCKET || "/tmp/customer-ai-v8.sock";
-const poolSize = Math.max(1, Math.min(4, Number(process.env.CUSTOMER_AI_V8_WORKER_POOL_SIZE || 2)));
 try { fs.unlinkSync(socketPath); } catch (error) { if (error.code !== "ENOENT") throw error; }
 
-const pool = new WorkerPool({ size: poolSize, timeoutMs: 10_000 });
+const TOPICS = [
+  ["credit", /クレジット|残高|credit|付与|反映/i],
+  ["account", /アカウント|ログイン|パスワード|認証|account|login/i],
+  ["billing", /料金|支払|決済|プラン|請求|billing|payment|price/i],
+  ["cancel", /解約|退会|削除|cancel|delete account/i],
+  ["webhook", /webhook|配送|再送|届か/i],
+  ["api", /api|キー|key/i],
+  ["corporate", /法人|スポンサー|投資|提携|enterprise|sponsor/i],
+];
 
-function normalizeText(text) {
-  return String(text || "").normalize("NFKC").replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "").trim();
+function normalize(text) {
+  return String(text || "")
+    .normalize("NFKC")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-async function analyze(payload) {
-  const workerNames = ["normalize", "human_context", "route", "decompose", "entities", "safety"];
-  const results = await Promise.all(workerNames.map((name) => pool.exec(name, payload)));
-  const [normalized, humanState, routed, decomposed, extracted, safety] = results;
+function detectTopic(message) {
+  for (const [topic, pattern] of TOPICS) if (pattern.test(message)) return topic;
+  return "";
+}
+
+function extractDetails(message) {
+  const details = {};
+  const hour = message.match(/(?:午前|午後)?\s*(\d{1,2})\s*時/);
+  if (hour) details.approximate_hour = Number(hour[1]);
+  const errorCode = message.match(/(?:エラー|error)\s*[:：#-]?\s*([A-Z0-9_-]{3,40})/i);
+  if (errorCode) details.error_code = errorCode[1];
+  const timing = message.match(/今日|昨日|一昨日|今朝|昨夜|さっき|先ほど/);
+  if (timing) details.relative_time = timing[0];
+  return details;
+}
+
+function analyzeTurn(payload) {
+  const message = normalize(payload.message);
+  const context = payload.context || {};
+  const explicitTopic = detectTopic(message);
+  const followUp = /^(それ|その|これ|では|じゃあ|あと|他|ちなみに|で、|なぜ|何で|どう|いつ|どこ|さっき|先ほど)/.test(message)
+    || (!explicitTopic && Boolean(context.active_topic || context.user_goal));
+  const activeTopic = explicitTopic || context.active_topic || "general";
+  const newTopic = Boolean(explicitTopic && context.active_topic && explicitTopic !== context.active_topic && !followUp);
+  const userGoal = newTopic || !context.user_goal ? message : context.user_goal;
+  const unresolved = Array.isArray(context.unresolved_questions) ? context.unresolved_questions.slice(-3) : [];
+  const retrievalParts = [message];
+  if (followUp && userGoal && userGoal !== message) retrievalParts.push(userGoal);
+  if (activeTopic && activeTopic !== "general") retrievalParts.push(activeTopic);
+  retrievalParts.push(...unresolved);
+  const retrievalQuery = [...new Set(retrievalParts.map(normalize).filter(Boolean))].join(" ").slice(0, 1200);
+  const questionCount = message.split(/[?？]/).filter((item) => item.trim()).length;
   return {
-    message: normalized.message,
-    search_query: normalized.search_query,
-    normalized_length: normalized.normalized_length,
-    human_state: humanState,
-    intent: routed.intent,
-    alternatives: routed.alternatives,
-    ambiguity: routed.ambiguity,
-    sub_questions: decomposed.sub_questions,
-    entities: extracted.entities,
-    safety,
-    worker_results: workerNames,
+    message,
+    follow_up: followUp,
+    context_used: Boolean(context.user_goal || (context.turns || []).length),
+    explicit_topic: explicitTopic,
+    active_topic: activeTopic,
+    user_goal: userGoal,
+    new_topic: newTopic,
+    confirmed_details: { ...(context.confirmed_details || {}), ...extractDetails(message) },
+    retrieval_query: retrievalQuery,
+    question_count: Math.max(1, questionCount),
   };
 }
 
-function plan(payload) {
-  const analysis = payload.analysis || {};
-  const evidence = Array.isArray(payload.evidence) ? payload.evidence : [];
-  const renderer = payload.renderer || {};
-  const contract = payload.contract || {};
-  const unresolvedAmbiguity = Number(analysis.ambiguity || 0) > 0;
-  const multiQuestion = (analysis.sub_questions || []).length > 1;
-  const multiEvidence = evidence.length > 1;
-  const humanAdaptation = ["high_pressure", "supportive"].includes(analysis.human_state?.mode);
-  const deterministicIncomplete = !String(payload.draft || "").trim() || Boolean(renderer.clarification);
-  const engineRequired = Boolean(
-    contract.engine_policy !== undefined
-    && renderer.requires_language_engine
-    && !deterministicIncomplete
-    && (unresolvedAmbiguity || (multiQuestion && multiEvidence) || (humanAdaptation && multiEvidence))
-  );
-  return {
-    engine_required: engineRequired,
-    engine_reason: engineRequired ? "structured_multi_evidence_composition" : "deterministic_skills_sufficient",
-    missing_values: [],
-    clarification: renderer.clarification || null,
-    action: null,
-    required_evidence_ids: evidence.map((item) => item.evidence_id).filter(Boolean),
-    required_question_indexes: (analysis.sub_questions || []).map((_, index) => index),
-    stop_conditions: contract.stop_conditions || [],
-  };
-}
-
-function verify(payload) {
-  let answer = normalizeText(payload.answer);
+function verifyTurn(payload) {
+  let answer = normalize(payload.answer);
   const violations = [];
-  const evidenceIds = new Set((payload.evidence || []).map((item) => item.evidence_id).filter(Boolean));
-  const usedEvidenceIds = new Set(payload.engine_output?.used_evidence_ids || payload.renderer?.evidence_refs || []);
-  for (const evidenceId of usedEvidenceIds) if (!evidenceIds.has(evidenceId)) violations.push("unknown_evidence_reference");
-  const forbidden = [
-    [/\b(?:password|api[_ -]?key|secret|token)\b\s*[:=]\s*\S+/i, "secret_pattern"],
-    [/(?:\/internal\/|src\/(?:system|component|feature|part)\/|\.env\b)/i, "internal_implementation"],
-    [/(?:完了しました|成功しました|返金しました|削除しました|refunded|deleted)/i, "unverified_action_claim"],
-    [/\b(?:as an ai|as a language model|qwen|hugging face|model provider)\b/i, "engine_identity"],
-  ];
-  for (const [pattern, code] of forbidden) {
-    if (pattern.test(answer)) {
-      violations.push(code);
-      answer = answer.replace(pattern, "確認済みの範囲で案内します");
-    }
+  const availableKbIds = new Set(payload.available_kb_ids || []);
+  for (const kbId of payload.used_kb_ids || []) {
+    if (!availableKbIds.has(kbId)) violations.push("unknown_kb_reference");
   }
   if (!answer) violations.push("empty_answer");
-  const requiredQuestions = payload.plan?.required_question_indexes || [];
-  const coveredQuestions = payload.engine_output?.covered_question_indexes || payload.renderer?.covered_question_indexes || [];
-  const missing = requiredQuestions.filter((index) => !coveredQuestions.includes(index));
-  if (missing.length && payload.evidence?.length) violations.push("question_coverage_incomplete");
-  const blocking = violations.filter((code) => code !== "engine_identity");
+  if (/\b(?:as an ai|as a language model|qwen|hugging face|model provider)\b/i.test(answer)) violations.push("engine_identity");
+  if (/(?:\/internal\/|src\/(?:system|component|feature|part)\/|\.env\b)/i.test(answer)) violations.push("internal_implementation");
+  if (/(?:返金しました|削除しました|解約しました|処理しました|refunded|deleted|cancelled)/i.test(answer)) violations.push("unverified_action_claim");
+  const expectedTopic = payload.analysis?.active_topic || "";
+  const returnedTopic = payload.returned_topic || expectedTopic;
+  if (payload.analysis?.follow_up && expectedTopic && returnedTopic && expectedTopic !== returnedTopic) violations.push("conversation_topic_drift");
   return {
-    answer: answer || (payload.request?.locale === "ja-JP" ? "確認できる情報が不足しています。" : "Confirmed information is insufficient."),
+    answer,
+    passed: violations.length === 0,
     violations: [...new Set(violations)],
-    completion: { passed: blocking.length === 0 && missing.length === 0 && Boolean(answer), missing: missing.map((index) => `sub_question:${index}`) },
   };
 }
 
 async function handle(request) {
   const started = Date.now();
   const { request_id: requestId, phase, payload, deadline_at: deadlineAt } = request;
-  if (!requestId || !phase || !payload) throw new Error("invalid_request");
+  if (!requestId || !phase || payload === undefined) throw new Error("invalid_request");
   if (Number(deadlineAt || 0) < Date.now()) throw new Error("deadline_exceeded");
   let result;
-  if (phase === "analyze") result = await analyze(payload);
-  else if (phase === "plan") result = plan(payload);
-  else if (phase === "verify") result = verify(payload);
-  else if (phase === "ping") result = { pong: true, node: process.version, worker_pool: pool.status() };
+  if (phase === "analyze_turn") result = analyzeTurn(payload);
+  else if (phase === "verify_turn") result = verifyTurn(payload);
+  else if (phase === "ping") result = { pong: true, node: process.version };
   else throw new Error("unsupported_phase");
   return { request_id: requestId, ok: true, result, error_code: null, duration_ms: Date.now() - started };
 }
@@ -118,8 +116,7 @@ const server = net.createServer((connection) => {
     const raw = buffer.slice(0, newline);
     buffer = buffer.slice(newline + 1);
     try {
-      const response = await handle(JSON.parse(raw));
-      connection.end(JSON.stringify(response) + "\n");
+      connection.end(JSON.stringify(await handle(JSON.parse(raw))) + "\n");
     } catch (error) {
       const requestId = (() => { try { return JSON.parse(raw).request_id || "unknown"; } catch { return "unknown"; } })();
       connection.end(JSON.stringify({ request_id: requestId, ok: false, result: {}, error_code: String(error?.message || error), duration_ms: 0 }) + "\n");
@@ -129,10 +126,9 @@ const server = net.createServer((connection) => {
 
 server.listen(socketPath, () => fs.chmodSync(socketPath, 0o600));
 
-async function shutdown() {
+function shutdown() {
   server.close();
-  await pool.destroy();
   try { fs.unlinkSync(socketPath); } catch {}
   process.exit(0);
 }
-for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { void shutdown(); });
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, shutdown);
