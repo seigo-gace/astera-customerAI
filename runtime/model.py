@@ -31,18 +31,28 @@ def _generate_gpu(model_id: str, revision: str, packet: str, max_new_tokens: int
     with _MODEL_LOCK:
         if _MODEL is None or _TOKENIZER is None:
             from transformers import AutoModelForCausalLM, AutoTokenizer
+
             _TOKENIZER = AutoTokenizer.from_pretrained(model_id, revision=revision, trust_remote_code=False)
-            _MODEL = AutoModelForCausalLM.from_pretrained(model_id, revision=revision, trust_remote_code=False, torch_dtype="auto", device_map="auto")
+            _MODEL = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                revision=revision,
+                trust_remote_code=False,
+                torch_dtype="auto",
+                device_map="auto",
+            )
         instruction = (
-            "Follow the supplied execution contract and return JSON only. "
-            "Use supplied verified evidence and structured skill results only. "
-            "Required keys: answer, used_evidence_ids, covered_question_indexes, clarification, unresolved."
+            "You are the language component of a customer-support system. "
+            "Continue the same conversation instead of treating the current message as a new standalone question. "
+            "Use the cached user goal, active topic, confirmed details, unresolved questions, recent turns, and verified KB evidence. "
+            "Answer the current turn while staying consistent with the user's original goal. "
+            "Do not invent facts or claim an action was completed. Ask only for genuinely missing information. "
+            "Return JSON only with keys: answer, user_goal, active_topic, unresolved_questions, used_kb_ids, needs_clarification."
         )
         messages = [{"role": "user", "content": instruction + "\n" + packet}]
         text = _TOKENIZER.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         inputs = _TOKENIZER(text, return_tensors="pt").to(_MODEL.device)
         outputs = _MODEL.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
-        generated = outputs[0][inputs["input_ids"].shape[1]:]
+        generated = outputs[0][inputs["input_ids"].shape[1] :]
         return _TOKENIZER.decode(generated, skip_special_tokens=True)
 
 
@@ -74,8 +84,8 @@ class GPUUsageLedger:
             handle.write(json.dumps({"timestamp": time.time(), "seconds": seconds}) + "\n")
 
 
-class ControlledLanguageEngine:
-    REQUIRED_PACKET_KEYS = {"execution_contract", "state_capsule", "analysis", "skill_results", "evidence", "plan", "draft"}
+class ConversationLanguageEngine:
+    REQUIRED_PACKET_KEYS = {"message", "conversation", "analysis", "kb_evidence", "response_rules"}
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -87,29 +97,24 @@ class ControlledLanguageEngine:
     def execute(self, packet: dict[str, Any]) -> dict[str, Any]:
         missing = sorted(self.REQUIRED_PACKET_KEYS.difference(packet))
         if missing:
-            raise ValueError("controlled_packet_missing:" + ",".join(missing))
-        policy = packet["execution_contract"].get("engine_policy") or {}
-        if not policy.get("allow"):
-            raise RuntimeError("language_engine_not_allowed_by_control_core")
-        if not packet.get("skill_results"):
-            raise ValueError("structured_skill_results_required")
-        evidence = packet.get("evidence") or []
-        if not evidence or not all(item.get("verified") and item.get("evidence_id") for item in evidence):
-            raise ValueError("verified_evidence_required")
+            raise ValueError("conversation_packet_missing:" + ",".join(missing))
         if not self.available():
             raise RuntimeError("model_unavailable_or_budget_exhausted")
         serialized = json.dumps(packet, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
         started = time.monotonic()
-        raw = _generate_gpu(self.settings.model_id, self.settings.model_revision, serialized, 512)
+        raw = _generate_gpu(self.settings.model_id, self.settings.model_revision, serialized, 640)
         self.ledger.record(time.monotonic() - started)
         parsed = self._parse_json(raw)
-        if not isinstance(parsed.get("answer"), str):
+        if not isinstance(parsed.get("answer"), str) or not parsed["answer"].strip():
             raise ValueError("model_schema_invalid:answer")
-        for key in ("used_evidence_ids", "covered_question_indexes", "unresolved"):
+        for key in ("user_goal", "active_topic"):
+            if not isinstance(parsed.get(key), str):
+                raise ValueError(f"model_schema_invalid:{key}")
+        for key in ("unresolved_questions", "used_kb_ids"):
             if not isinstance(parsed.get(key), list):
                 raise ValueError(f"model_schema_invalid:{key}")
-        if parsed.get("clarification") is not None and not isinstance(parsed.get("clarification"), str):
-            raise ValueError("model_schema_invalid:clarification")
+        if not isinstance(parsed.get("needs_clarification"), bool):
+            raise ValueError("model_schema_invalid:needs_clarification")
         return parsed
 
     @staticmethod
@@ -125,4 +130,5 @@ class ControlledLanguageEngine:
         return parsed
 
 
-DialogueModel = ControlledLanguageEngine
+ControlledLanguageEngine = ConversationLanguageEngine
+DialogueModel = ConversationLanguageEngine
