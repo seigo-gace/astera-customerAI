@@ -64,8 +64,7 @@ class NodeBootstrap:
                 temp_archive.unlink(missing_ok=True)
                 raise V8Unavailable("downloaded Node.js archive checksum mismatch")
             os.replace(temp_archive, archive)
-
-        local_root = Path("/tmp") / f"astera-node-v{NODE_VERSION}-{flavor}"
+        local_root = Path("/tmp") / f"customer-ai-node-v{NODE_VERSION}-{flavor}"
         binary = local_root / "bin" / "node"
         if _node_major(str(binary)) >= 22:
             return str(binary)
@@ -97,51 +96,11 @@ class NodeBootstrap:
         return digest.hexdigest()
 
 
-class AsteraBootstrap:
-    def __init__(self, settings: Settings):
-        self.settings = settings
-
-    def ensure(self) -> str:
-        if self.settings.astera_path:
-            return self.settings.astera_path
-        destination = self.settings.data_root / "runtime" / "astera_v8" / self.settings.astera_commit
-        marker = destination / "src" / "kagura-engine.js"
-        if marker.exists():
-            return str(destination)
-        git = shutil.which("git")
-        if not git:
-            return ""
-        temp = destination.with_name(destination.name + ".tmp")
-        shutil.rmtree(temp, ignore_errors=True)
-        temp.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            subprocess.run(
-                [git, "clone", "--filter=blob:none", "--no-checkout", self.settings.astera_repo, str(temp)],
-                check=True,
-                timeout=120,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            subprocess.run(
-                [git, "-C", str(temp), "checkout", "--detach", self.settings.astera_commit],
-                check=True,
-                timeout=60,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            os.replace(temp, destination)
-            return str(destination)
-        except Exception:
-            shutil.rmtree(temp, ignore_errors=True)
-            return ""
-
-
 class V8Supervisor:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.process: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
-        self.astera_path = ""
         self.node_binary = settings.node_binary
 
     async def start(self) -> None:
@@ -149,17 +108,13 @@ class V8Supervisor:
             if self.process and self.process.returncode is None:
                 return
             self.node_binary = await asyncio.to_thread(NodeBootstrap(self.settings).resolve)
-            self.astera_path = await asyncio.to_thread(AsteraBootstrap(self.settings).ensure)
             self.settings.node_socket.unlink(missing_ok=True)
             script = Path(__file__).resolve().parent.parent / "v8" / "server.mjs"
             env = os.environ.copy()
-            env.update(
-                {
-                    "CUSTOMER_AI_NODE_SOCKET": str(self.settings.node_socket),
-                    "CUSTOMER_AI_ASTERA_PATH": self.astera_path,
-                    "CUSTOMER_AI_ASTERA_COMMIT": self.settings.astera_commit,
-                }
-            )
+            env.update({
+                "CUSTOMER_AI_NODE_SOCKET": str(self.settings.node_socket),
+                "CUSTOMER_AI_V8_WORKER_POOL_SIZE": str(self.settings.v8_worker_pool_size),
+            })
             self.process = await asyncio.create_subprocess_exec(
                 self.node_binary,
                 f"--max-old-space-size={self.settings.node_memory_mb}",
@@ -192,12 +147,7 @@ class V8Supervisor:
         if not self.process or self.process.returncode is not None:
             await self.start()
         request_id = str(uuid.uuid4())
-        request = {
-            "request_id": request_id,
-            "phase": phase,
-            "deadline_at": int((time.time() + timeout) * 1000),
-            "payload": payload,
-        }
+        request = {"request_id": request_id, "phase": phase, "deadline_at": int((time.time() + timeout) * 1000), "payload": payload}
         try:
             reader, writer = await asyncio.open_unix_connection(str(self.settings.node_socket))
             writer.write((json.dumps(request, ensure_ascii=False) + "\n").encode())
