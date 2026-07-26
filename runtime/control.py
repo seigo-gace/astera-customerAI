@@ -100,6 +100,7 @@ class ControlledExecutionCore:
             request=request.model_dump(mode="json"), answer=answer, analysis=analysis, plan=plan,
             contract=contract, evidence=evidence, engine_output=engine_output, renderer=renderer,
         )
+        answer = str(verification.get("answer") or answer)
         guard_context = {**evidence_context, "answer": answer, "verification": verification}
         guard_results = await self.skills.execute(self.skills.select("guard", required_tags=("security", "output")), guard_context)
         guard = self._result_map(guard_results)["$customer-ai.output-guard"].output
