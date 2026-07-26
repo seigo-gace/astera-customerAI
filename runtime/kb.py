@@ -4,6 +4,8 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -45,11 +47,14 @@ class SnapshotInfo:
 
 
 class KBIndex:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, cache_ttl_seconds: int = 120, cache_max_entries: int = 256):
         self.root = root / "kb"
         self.root.mkdir(parents=True, exist_ok=True)
         self._connection: sqlite3.Connection | None = None
         self._version: str | None = None
+        self._cache_ttl_seconds = cache_ttl_seconds
+        self._cache_max_entries = cache_max_entries
+        self._query_cache: OrderedDict[tuple[str, str, int], tuple[float, list[KBHit]]] = OrderedDict()
 
     def _manifest_path(self) -> Path:
         return self.root / "manifest.json"
@@ -73,19 +78,27 @@ class KBIndex:
         old = self._connection
         self._connection = new
         self._version = info.version
+        self._query_cache.clear()
         if old is not None:
             old.close()
         return True
 
     def search(self, query: str, *, limit: int = 5) -> list[KBHit]:
-        if not self.open() or self._connection is None:
+        if not self.open() or self._connection is None or not self._version:
             return []
-        terms = [part.strip().replace("%", "").replace("_", "") for part in query.split() if part.strip()][:8]
+        normalized_query = " ".join(query.split())[:1000]
+        cache_key = (self._version, normalized_query, limit)
+        now = time.monotonic()
+        cached = self._query_cache.get(cache_key)
+        if cached and cached[0] > now:
+            self._query_cache.move_to_end(cache_key)
+            return [KBHit.model_validate(item.model_dump()) for item in cached[1]]
+        if cached:
+            self._query_cache.pop(cache_key, None)
+
+        terms = [part.strip().replace("%", "").replace("_", "") for part in normalized_query.split() if part.strip()][:12]
         if not terms:
             return []
-
-        # unicode61 does not reliably segment Japanese phrases. Use deterministic substring scoring first,
-        # while retaining FTS5 as the indexed storage/search layer for whitespace-separated aliases.
         score_parts: list[str] = []
         where_parts: list[str] = []
         params: list[Any] = []
@@ -107,7 +120,7 @@ class KBIndex:
         )
         params.append(limit)
         rows = self._connection.execute(sql, params).fetchall()
-        return [
+        hits = [
             KBHit(
                 kb_id=row["kb_id"],
                 question=row["question"],
@@ -119,6 +132,14 @@ class KBIndex:
             )
             for row in rows
         ]
+        self._query_cache[cache_key] = (now + self._cache_ttl_seconds, hits)
+        self._query_cache.move_to_end(cache_key)
+        while len(self._query_cache) > self._cache_max_entries:
+            self._query_cache.popitem(last=False)
+        return [KBHit.model_validate(item.model_dump()) for item in hits]
+
+    def cache_status(self) -> dict[str, int]:
+        return {"entries": len(self._query_cache), "max_entries": self._cache_max_entries}
 
     def build_snapshot(self, *, version: str, pages: Iterable[dict[str, Any]]) -> SnapshotInfo:
         snapshot_dir = self.root / "snapshots" / version
@@ -134,14 +155,8 @@ class KBIndex:
                 normalized = normalize_page(page)
                 if normalized is None:
                     continue
-                connection.execute(
-                    "INSERT INTO kb_pages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    normalized,
-                )
-                connection.execute(
-                    "INSERT INTO kb_fts VALUES (?, ?, ?, ?, ?)",
-                    (normalized[0], normalized[1], normalized[2], normalized[3], normalized[4]),
-                )
+                connection.execute("INSERT INTO kb_pages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", normalized)
+                connection.execute("INSERT INTO kb_fts VALUES (?, ?, ?, ?, ?)", (normalized[0], normalized[1], normalized[2], normalized[3], normalized[4]))
                 accepted += 1
             connection.commit()
             integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
@@ -156,6 +171,7 @@ class KBIndex:
         manifest_tmp = self.root / ".manifest.tmp"
         manifest_tmp.write_text(json.dumps({"version": version, "page_count": accepted}), encoding="utf-8")
         os.replace(manifest_tmp, self._manifest_path())
+        self._query_cache.clear()
         return SnapshotInfo(version=version, path=final)
 
 
