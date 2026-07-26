@@ -2,29 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
-import logging
 import time
-from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-from .bots import BotContract, RoutineBotSupervisor
 from .config import Settings
-from .control import ControlledExecutionCore
+from .control import ConversationCore
+from .conversation import ConversationCache
 from .kb import KBIndex
-from .model import ControlledLanguageEngine
+from .model import ConversationLanguageEngine
 from .notion import NotionClient
 from .schemas import CloudEvent, JobRecord, JobResult, MessagePayload
 from .security import canonical_json, redact_text, sanitize_structure, sign_hmac, validate_identifier
-from .skills import build_default_registry
 from .storage import ConflictError, JobStore
 from .v8 import V8Supervisor
-
-LOG = logging.getLogger("customer-ai")
 
 
 class GatewayClient:
@@ -61,57 +55,32 @@ class CustomerAIService:
         self.settings = settings or Settings.load()
         self.settings.ensure_directories()
         self.jobs = JobStore(self.settings.data_root)
-        self.kb = KBIndex(self.settings.data_root)
+        self.kb = KBIndex(
+            self.settings.data_root,
+            cache_ttl_seconds=self.settings.kb_cache_ttl_seconds,
+            cache_max_entries=self.settings.kb_cache_max_entries,
+        )
         self.v8 = V8Supervisor(self.settings)
-        self.engine = ControlledLanguageEngine(self.settings)
-        self.skills = build_default_registry()
-        self.control = ControlledExecutionCore(v8=self.v8, engine=self.engine, skills=self.skills)
+        self.engine = ConversationLanguageEngine(self.settings)
+        self.conversations = ConversationCache(
+            self.settings.data_root,
+            ttl_seconds=self.settings.session_cache_ttl_seconds,
+            max_sessions=self.settings.session_cache_max_sessions,
+            max_turns=self.settings.session_cache_max_turns,
+        )
+        self.core = ConversationCore(v8=self.v8, engine=self.engine, cache=self.conversations, search=self.kb.search)
         self.gateway = GatewayClient(self.settings)
         self.notion = NotionClient(self.settings.notion_token, self.settings.notion_data_source_id)
-        self.bots = RoutineBotSupervisor()
         self._process_semaphore = asyncio.Semaphore(self.settings.process_concurrency)
-        self._register_bots()
-
-    def _register_bots(self) -> None:
-        self.bots.register(
-            BotContract(
-                bot_id="$bot.customer-ai.recovery",
-                interval_seconds=self.settings.recovery_bot_interval_seconds,
-                purpose="Recover stale jobs and request deterministic requeue through the existing Gateway.",
-                side_effect="network",
-            ),
-            self.recover_once,
-        )
-        self.bots.register(
-            BotContract(
-                bot_id="$bot.customer-ai.question-insight",
-                interval_seconds=self.settings.insight_bot_interval_seconds,
-                purpose="Aggregate sanitized question-insight records for KB maintenance without an AI call.",
-                side_effect="write",
-            ),
-            self.aggregate_insights_once,
-        )
-        if self.settings.enable_kb_sync_bot:
-            self.bots.register(
-                BotContract(
-                    bot_id="$bot.customer-ai.kb-sync",
-                    interval_seconds=self.settings.kb_sync_bot_interval_seconds,
-                    purpose="Synchronize confirmed Notion KB pages into a versioned local SQLite snapshot.",
-                    side_effect="network",
-                ),
-                self.sync_notion_kb_auto,
-            )
 
     async def startup(self) -> None:
         try:
             await self.v8.start()
-        except Exception as exc:
-            LOG.warning("V8 startup degraded: %s", exc)
+        except Exception:
+            pass
         self.kb.open()
-        await self.bots.start()
 
     async def shutdown(self) -> None:
-        await self.bots.stop()
         await self.v8.stop()
 
     async def sync_notion_kb(self, version: str) -> dict[str, Any]:
@@ -120,30 +89,6 @@ class CustomerAIService:
         self.kb.open()
         result = {"version": info.version, "path": str(info.path), "source_pages": len(pages)}
         await self.gateway.emit("customer.ai.kb.update.applied", f"kb/{version}", result)
-        return result
-
-    async def sync_notion_kb_auto(self) -> dict[str, Any]:
-        if not self.settings.notion_token or not self.settings.notion_data_source_id:
-            return {"skipped": True, "reason": "notion_not_configured"}
-        version = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        return await self.sync_notion_kb(version)
-
-    async def aggregate_insights_once(self) -> dict[str, Any]:
-        counts: Counter[str] = Counter()
-        scanned = 0
-        for insight_path in self.settings.data_root.glob("jobs/*/*/insight.json"):
-            try:
-                row = json.loads(insight_path.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            counts[str(row.get("classification") or "unknown")] += 1
-            scanned += 1
-        result = {
-            "generated_at": datetime.now(UTC).isoformat(),
-            "scanned": scanned,
-            "classifications": dict(sorted(counts.items())),
-        }
-        self.jobs.store.put_json(self.settings.data_root / "bots" / "question-insight-summary.json", result)
         return result
 
     async def recover_once(self) -> dict[str, Any]:
@@ -202,7 +147,7 @@ class CustomerAIService:
                 if existing:
                     return existing
                 request = self.jobs.get_request(job_id)
-                self.jobs.update_job(job_id, status="processing", stage="controlled_execution")
+                self.jobs.update_job(job_id, status="processing", stage="conversation_context")
                 session_lease_path = self.jobs.sessions_root / request.session_id / "lease.json"
                 try:
                     with self.jobs.store.lease(session_lease_path, job_id, self.settings.session_lease_seconds):
@@ -216,11 +161,8 @@ class CustomerAIService:
                 return result
 
     async def _run_pipeline(self, job_id: str, request: MessagePayload) -> dict[str, Any]:
-        session = self.jobs.get_session_state(request.session_id)
-        outcome = await self.control.execute(job_id=job_id, request=request, session=session, search=self.kb.search)
-        self.jobs.append_session_state(request.session_id, job_id, outcome.state)
-        self.jobs.save_insight(job_id, outcome.insight)
-        base = JobResult(
+        outcome = await self.core.execute(request=request)
+        return JobResult(
             job_id=job_id,
             session_id=request.session_id,
             status=outcome.status,
@@ -229,8 +171,11 @@ class CustomerAIService:
             ai_invoked=outcome.engine_invoked,
             clarification=outcome.clarification,
             facts=outcome.facts,
-        ).model_dump(mode="json")
-        return base | {"violations": outcome.violations, "insight": outcome.insight, "execution": outcome.execution}
+            context_used=outcome.context_used,
+        ).model_dump(mode="json") | {
+            "analysis": outcome.analysis,
+            "violations": outcome.violations,
+        }
 
     def readiness(self) -> dict[str, Any]:
         return {
@@ -239,9 +184,8 @@ class CustomerAIService:
             "kb": self.kb.current() is not None,
             "model_enabled": self.settings.enable_model,
             "model_revision_pinned": bool(self.settings.model_revision),
-            "active_structured_skills": self.skills.active_ids(),
-            "routine_bots": self.bots.status(),
-            "control_core": "$controlled-execution-core-derived",
+            "conversation_cache": self.conversations.status(),
+            "kb_cache": self.kb.cache_status(),
         }
 
 
