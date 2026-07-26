@@ -18,5 +18,8 @@ def data_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("CUSTOMER_AI_ENABLE_MODEL", "0")
     monkeypatch.setenv("CUSTOMER_AI_NODE_SOCKET", str(tmp_path / "v8.sock"))
     monkeypatch.setenv("CUSTOMER_AI_NODE_BINARY", "node")
-    monkeypatch.setenv("CUSTOMER_AI_ASTERA_PATH", "")
+    monkeypatch.setenv("CUSTOMER_AI_V8_WORKER_POOL_SIZE", "2")
+    monkeypatch.setenv("CUSTOMER_AI_RECOVERY_BOT_INTERVAL_SECONDS", "3600")
+    monkeypatch.setenv("CUSTOMER_AI_INSIGHT_BOT_INTERVAL_SECONDS", "3600")
+    monkeypatch.setenv("CUSTOMER_AI_ENABLE_KB_SYNC_BOT", "0")
     return root

@@ -5,27 +5,24 @@ import hashlib
 import json
 import logging
 import time
+from collections import Counter
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
 
+from .bots import BotContract, RoutineBotSupervisor
 from .config import Settings
+from .control import ControlledExecutionCore
 from .kb import KBIndex
-from .model import DialogueModel
+from .model import ControlledLanguageEngine
 from .notion import NotionClient
 from .schemas import CloudEvent, JobRecord, JobResult, MessagePayload
-from .security import (
-    canonical_json,
-    contains_internal_implementation,
-    redact_text,
-    safe_candidate_phrase,
-    sanitize_structure,
-    sign_hmac,
-    validate_identifier,
-)
+from .security import canonical_json, redact_text, sanitize_structure, sign_hmac, validate_identifier
+from .skills import build_default_registry
 from .storage import ConflictError, JobStore
-from .v8 import V8Supervisor, V8Unavailable
+from .v8 import V8Supervisor
 
 LOG = logging.getLogger("customer-ai")
 
@@ -40,7 +37,7 @@ class GatewayClient:
         event = {
             "specversion": "1.0",
             "id": "evt_" + hashlib.sha256(f"{event_type}:{subject}:{canonical_json(data).hex()}".encode()).hexdigest()[:32],
-            "source": "astera://customer-ai/hf",
+            "source": "customer-ai://hf-runtime",
             "type": event_type,
             "subject": subject,
             "time": datetime.now(UTC).isoformat(),
@@ -66,12 +63,44 @@ class CustomerAIService:
         self.jobs = JobStore(self.settings.data_root)
         self.kb = KBIndex(self.settings.data_root)
         self.v8 = V8Supervisor(self.settings)
-        self.model = DialogueModel(self.settings)
+        self.engine = ControlledLanguageEngine(self.settings)
+        self.skills = build_default_registry()
+        self.control = ControlledExecutionCore(v8=self.v8, engine=self.engine, skills=self.skills)
         self.gateway = GatewayClient(self.settings)
         self.notion = NotionClient(self.settings.notion_token, self.settings.notion_data_source_id)
+        self.bots = RoutineBotSupervisor()
         self._process_semaphore = asyncio.Semaphore(self.settings.process_concurrency)
-        self._recovery_task: asyncio.Task[None] | None = None
-        self._stopping = asyncio.Event()
+        self._register_bots()
+
+    def _register_bots(self) -> None:
+        self.bots.register(
+            BotContract(
+                bot_id="$bot.customer-ai.recovery",
+                interval_seconds=self.settings.recovery_bot_interval_seconds,
+                purpose="Recover stale jobs and request deterministic requeue through the existing Gateway.",
+                side_effect="network",
+            ),
+            self.recover_once,
+        )
+        self.bots.register(
+            BotContract(
+                bot_id="$bot.customer-ai.question-insight",
+                interval_seconds=self.settings.insight_bot_interval_seconds,
+                purpose="Aggregate sanitized question-insight records for KB maintenance without an AI call.",
+                side_effect="write",
+            ),
+            self.aggregate_insights_once,
+        )
+        if self.settings.enable_kb_sync_bot:
+            self.bots.register(
+                BotContract(
+                    bot_id="$bot.customer-ai.kb-sync",
+                    interval_seconds=self.settings.kb_sync_bot_interval_seconds,
+                    purpose="Synchronize confirmed Notion KB pages into a versioned local SQLite snapshot.",
+                    side_effect="network",
+                ),
+                self.sync_notion_kb_auto,
+            )
 
     async def startup(self) -> None:
         try:
@@ -79,17 +108,11 @@ class CustomerAIService:
         except Exception as exc:
             LOG.warning("V8 startup degraded: %s", exc)
         self.kb.open()
-        self._stopping.clear()
-        self._recovery_task = asyncio.create_task(self._recovery_loop(), name="customer-ai-recovery")
+        await self.bots.start()
 
     async def shutdown(self) -> None:
-        self._stopping.set()
-        if self._recovery_task:
-            self._recovery_task.cancel()
-            await asyncio.gather(self._recovery_task, return_exceptions=True)
-            self._recovery_task = None
+        await self.bots.stop()
         await self.v8.stop()
-
 
     async def sync_notion_kb(self, version: str) -> dict[str, Any]:
         pages = await self.notion.fetch_pages()
@@ -97,6 +120,30 @@ class CustomerAIService:
         self.kb.open()
         result = {"version": info.version, "path": str(info.path), "source_pages": len(pages)}
         await self.gateway.emit("customer.ai.kb.update.applied", f"kb/{version}", result)
+        return result
+
+    async def sync_notion_kb_auto(self) -> dict[str, Any]:
+        if not self.settings.notion_token or not self.settings.notion_data_source_id:
+            return {"skipped": True, "reason": "notion_not_configured"}
+        version = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        return await self.sync_notion_kb(version)
+
+    async def aggregate_insights_once(self) -> dict[str, Any]:
+        counts: Counter[str] = Counter()
+        scanned = 0
+        for insight_path in self.settings.data_root.glob("jobs/*/*/insight.json"):
+            try:
+                row = json.loads(insight_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            counts[str(row.get("classification") or "unknown")] += 1
+            scanned += 1
+        result = {
+            "generated_at": datetime.now(UTC).isoformat(),
+            "scanned": scanned,
+            "classifications": dict(sorted(counts.items())),
+        }
+        self.jobs.store.put_json(self.settings.data_root / "bots" / "question-insight-summary.json", result)
         return result
 
     async def recover_once(self) -> dict[str, Any]:
@@ -122,22 +169,9 @@ class CustomerAIService:
             if not should_requeue:
                 continue
             self.jobs.update_job(record.job_id, status="retrying", stage="recovery_requeue")
-            await self.gateway.emit(
-                "customer.ai.job.requeue.requested", f"job/{record.job_id}", {"job_id": record.job_id}
-            )
+            await self.gateway.emit("customer.ai.job.requeue.requested", f"job/{record.job_id}", {"job_id": record.job_id})
             recovered.append(record.job_id)
         return {"recovered": recovered, "count": len(recovered)}
-
-    async def _recovery_loop(self) -> None:
-        while not self._stopping.is_set():
-            try:
-                await self.recover_once()
-            except Exception as exc:
-                LOG.warning("recovery scan failed: %s", exc)
-            try:
-                await asyncio.wait_for(self._stopping.wait(), timeout=60)
-            except TimeoutError:
-                continue
 
     async def accept(self, event: CloudEvent) -> tuple[dict[str, Any], bool]:
         if event.type != "customer.ai.message.requested":
@@ -163,128 +197,40 @@ class CustomerAIService:
         if existing:
             return existing
         async with self._process_semaphore:
-            with self.jobs.store.lease(
-                self.jobs.job_dir(job_id) / "lease.json", f"processor:{job_id}", self.settings.job_lease_seconds
-            ):
+            with self.jobs.store.lease(self.jobs.job_dir(job_id) / "lease.json", f"processor:{job_id}", self.settings.job_lease_seconds):
                 existing = self.jobs.get_result(job_id)
                 if existing:
                     return existing
                 request = self.jobs.get_request(job_id)
-                self.jobs.update_job(job_id, status="processing", stage="preprocess")
+                self.jobs.update_job(job_id, status="processing", stage="controlled_execution")
                 session_lease_path = self.jobs.sessions_root / request.session_id / "lease.json"
                 try:
-                    with self.jobs.store.lease(
-                        session_lease_path, job_id, self.settings.session_lease_seconds
-                    ):
+                    with self.jobs.store.lease(session_lease_path, job_id, self.settings.session_lease_seconds):
                         result = await self._run_pipeline(job_id, request)
                 except ConflictError:
                     self.jobs.update_job(job_id, status="retrying", stage="session_busy")
                     return {"job_id": job_id, "status": "retrying", "retry_after": 2}
                 self.jobs.save_result(job_id, result)
-                self.jobs.update_job(job_id, status=result["status"], stage="completed")
+                self.jobs.update_job(job_id, status=result["status"], stage=result["status"])
                 await self.gateway.emit("customer.ai.response.completed", f"job/{job_id}", result)
                 return result
 
     async def _run_pipeline(self, job_id: str, request: MessagePayload) -> dict[str, Any]:
         session = self.jobs.get_session_state(request.session_id)
-        try:
-            phase_a = await self.v8.request(
-                "preprocess", {"message": request.message, "locale": request.locale, "session": session}
-            )
-        except V8Unavailable:
-            phase_a = fallback_preprocess(request.message, request.locale)
-        query = str(phase_a.get("search_query") or request.message)
-        hits = self.kb.search(query, limit=5)
-        materials = [hit.model_dump() for hit in hits]
-        try:
-            phase_b = await self.v8.request(
-                "plan",
-                {
-                    "message": request.message,
-                    "locale": request.locale,
-                    "session": session,
-                    "preprocess": phase_a,
-                    "kb": materials,
-                },
-            )
-        except V8Unavailable:
-            phase_b = fallback_plan(request.message, materials)
-
-        answer = render_script_answer(request.locale, materials, phase_b)
-        ai_invoked = False
-        if phase_b.get("ai_required") and self.model.available():
-            try:
-                generated = await asyncio.to_thread(
-                    self.model.generate,
-                    {
-                        "locale": request.locale,
-                        "message": request.message,
-                        "confirmed_kb": materials,
-                        "plan": phase_b,
-                        "prohibited_claims": [
-                            "unverified payment or credit status",
-                            "unverified action completion",
-                            "internal implementation details",
-                        ],
-                    },
-                )
-                answer = generated["answer"]
-                ai_invoked = True
-            except Exception as exc:
-                LOG.warning("model fallback for %s: %s", job_id, exc)
-
-        try:
-            phase_c = await self.v8.request(
-                "verify",
-                {
-                    "answer": answer,
-                    "message": request.message,
-                    "locale": request.locale,
-                    "kb": materials,
-                    "plan": phase_b,
-                },
-            )
-            answer = str(phase_c.get("answer") or answer)
-            violations = phase_c.get("violations", [])
-        except V8Unavailable:
-            violations = []
-
-        safe = redact_text(answer).text
-        if contains_internal_implementation(safe):
-            safe = "内部構成の詳細は公開していません。利用方法と問題解決に必要な範囲で案内します。"
-        if not materials and not phase_b.get("clarification"):
-            phase_b["clarification"] = (
-                "確認できる情報が不足しています。どの画面・操作・エラーで起きたかを教えてください。"
-                if request.locale == "ja-JP"
-                else "I need a little more confirmed context. Which screen, operation, or error is involved?"
-            )
-        status = "awaiting_clarification" if phase_b.get("clarification") and not materials else "completed"
-        if status == "awaiting_clarification":
-            safe = str(phase_b["clarification"])
-
-        state = {
-            "topic": phase_a.get("intent", "unknown"),
-            "intent": phase_a.get("intent", "unknown"),
-            "confirmed_values": phase_a.get("entities", {}),
-            "missing_values": phase_b.get("missing_values", []),
-            "pending_action": phase_b.get("action"),
-            "last_kb_ids": [hit.kb_id for hit in hits],
-            "emotion": phase_a.get("emotion", "neutral"),
-            "resolution": "pending_feedback" if status == "completed" else "unresolved",
-        }
-        self.jobs.append_session_state(request.session_id, job_id, state)
-        insight = build_insight(request, hits, status, phase_a, phase_b)
-        self.jobs.save_insight(job_id, insight)
-        return JobResult(
+        outcome = await self.control.execute(job_id=job_id, request=request, session=session, search=self.kb.search)
+        self.jobs.append_session_state(request.session_id, job_id, outcome.state)
+        self.jobs.save_insight(job_id, outcome.insight)
+        base = JobResult(
             job_id=job_id,
             session_id=request.session_id,
-            status=status,
-            answer=safe,
-            kb_ids=[hit.kb_id for hit in hits],
-            ai_invoked=ai_invoked,
-            clarification=phase_b.get("clarification"),
-            facts=[hit.short_answer for hit in hits],
-        ).model_dump(mode="json") | {"violations": violations, "insight": insight}
+            status=outcome.status,
+            answer=outcome.answer,
+            kb_ids=outcome.kb_ids,
+            ai_invoked=outcome.engine_invoked,
+            clarification=outcome.clarification,
+            facts=outcome.facts,
+        ).model_dump(mode="json")
+        return base | {"violations": outcome.violations, "insight": outcome.insight, "execution": outcome.execution}
 
     def readiness(self) -> dict[str, Any]:
         return {
@@ -293,10 +239,13 @@ class CustomerAIService:
             "kb": self.kb.current() is not None,
             "model_enabled": self.settings.enable_model,
             "model_revision_pinned": bool(self.settings.model_revision),
+            "active_structured_skills": self.skills.active_ids(),
+            "routine_bots": self.bots.status(),
+            "control_core": "$controlled-execution-core-derived",
         }
 
 
-def os_access(path: Any) -> bool:
+def os_access(path: Path) -> bool:
     try:
         probe = path / "temporary" / ".ready-probe"
         probe.parent.mkdir(parents=True, exist_ok=True)
@@ -305,57 +254,3 @@ def os_access(path: Any) -> bool:
         return True
     except OSError:
         return False
-
-
-def fallback_preprocess(message: str, locale: str) -> dict[str, Any]:
-    lowered = message.lower()
-    intent = "credit" if any(word in lowered for word in ("credit", "クレジット", "残高")) else "general"
-    emotion = "frustrated" if any(word in lowered for word in ("困", "怒", "反映され", "doesn't", "not working")) else "neutral"
-    return {"intent": intent, "emotion": emotion, "entities": {}, "search_query": message}
-
-
-def fallback_plan(message: str, materials: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
-        "ai_required": len(materials) > 1 or len(message) > 220,
-        "clarification": None,
-        "missing_values": [],
-        "action": None,
-    }
-
-
-def render_script_answer(locale: str, materials: list[dict[str, Any]], plan: dict[str, Any]) -> str:
-    if materials:
-        primary = materials[0]
-        detail = primary.get("body", "").strip()
-        return primary.get("short_answer", "") + (f"\n\n{detail}" if detail else "")
-    return (
-        "確認できるKBが見つかりませんでした。状況を特定するため、対象の機能と現在表示されている内容を教えてください。"
-        if locale == "ja-JP"
-        else "I could not find a confirmed KB entry. Please tell me the feature and what is currently shown."
-    )
-
-
-def build_insight(request: MessagePayload, hits: list[Any], status: str, phase_a: dict[str, Any], phase_b: dict[str, Any]) -> dict[str, Any]:
-    if not hits:
-        classification = "missing_page"
-    elif status == "awaiting_clarification":
-        classification = "missing_follow_up"
-    elif len(hits) > 1:
-        classification = "known_composite"
-    else:
-        classification = "known_exact"
-    normalized = " ".join(request.message.split())[:500]
-    candidate_safe = safe_candidate_phrase(normalized)
-    return {
-        "classification": classification,
-        "normalized_question": normalized,
-        "intent": phase_a.get("intent"),
-        "matched_kb_ids": [hit.kb_id for hit in hits],
-        # Question-derived phrases are candidates only. They become Level A after resolved feedback
-        # and a second deterministic validation pass; facts always require confirmed sources.
-        "safe_auto_update_level": "candidate_A" if classification == "known_exact" and candidate_safe else "C",
-        "suggested_search_term": normalized if classification == "known_exact" and candidate_safe else None,
-        "requires_resolved_feedback": True,
-        "requires_confirmed_source": classification not in {"known_exact", "known_composite"},
-        "action": phase_b.get("action"),
-    }

@@ -1,81 +1,75 @@
 import net from "node:net";
 import fs from "node:fs";
-import path from "node:path";
-import { createRequire } from "node:module";
+import { WorkerPool } from "./worker-pool.mjs";
 
-const socketPath = process.env.CUSTOMER_AI_NODE_SOCKET || "/tmp/astera-customer-ai-v8.sock";
+const socketPath = process.env.CUSTOMER_AI_NODE_SOCKET || "/tmp/customer-ai-v8.sock";
+const poolSize = Math.max(1, Math.min(4, Number(process.env.CUSTOMER_AI_V8_WORKER_POOL_SIZE || 2)));
 try { fs.unlinkSync(socketPath); } catch (error) { if (error.code !== "ENOENT") throw error; }
 
-let asteraEngine = null;
-let asteraLoadError = null;
-const asteraPath = process.env.CUSTOMER_AI_ASTERA_PATH || "";
-if (asteraPath) {
-  try {
-    const require = createRequire(import.meta.url);
-    const KaguraEngine = require(path.join(asteraPath, "src", "kagura-engine.js"));
-    asteraEngine = new KaguraEngine({ poolSize: 1 });
-  } catch (error) {
-    asteraLoadError = String(error?.message || error);
-  }
-}
+const pool = new WorkerPool({ size: poolSize, timeoutMs: 10_000 });
 
-function normalize(text) {
+function normalizeText(text) {
   return String(text || "").normalize("NFKC").replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "").trim();
 }
 
-function preprocess(payload) {
-  const message = normalize(payload.message);
-  const lower = message.toLowerCase();
-  const intents = [
-    ["credit", ["クレジット", "残高", "credit", "反映"]],
-    ["account", ["ログイン", "アカウント", "password", "認証"]],
-    ["webhook", ["webhook", "届か", "配送", "再送"]],
-    ["api", ["api", "key", "キー"]],
-    ["billing", ["料金", "支払", "決済", "plan", "プラン"]],
-  ];
-  const intent = intents.find(([, words]) => words.some((word) => lower.includes(word)))?.[0] || "general";
-  const emotion = /怒|ふざけ|困|最悪|反映されない|届かない|not working|broken/i.test(message) ? "frustrated" : "neutral";
-  const subQuestions = message.split(/[?？\n]+/).map((item) => item.trim()).filter(Boolean);
-  const entities = {};
-  const timeMatch = message.match(/(?:午前|午後)?\s*(\d{1,2})\s*時/);
-  if (timeMatch) entities.approximate_hour = Number(timeMatch[1]);
-  return { message, intent, emotion, entities, sub_questions: subQuestions, search_query: message };
+async function analyze(payload) {
+  const workerNames = ["normalize", "human_context", "route", "decompose", "entities", "safety"];
+  const results = await Promise.all(workerNames.map((name) => pool.exec(name, payload)));
+  const [normalized, humanState, routed, decomposed, extracted, safety] = results;
+  return {
+    message: normalized.message,
+    search_query: normalized.search_query,
+    normalized_length: normalized.normalized_length,
+    human_state: humanState,
+    intent: routed.intent,
+    alternatives: routed.alternatives,
+    ambiguity: routed.ambiguity,
+    sub_questions: decomposed.sub_questions,
+    entities: extracted.entities,
+    safety,
+    worker_results: workerNames,
+  };
 }
 
-async function plan(payload) {
-  const kb = Array.isArray(payload.kb) ? payload.kb : [];
-  const preprocessResult = payload.preprocess || {};
-  const message = normalize(payload.message);
-  let astera = null;
-  if (asteraEngine && (kb.length > 1 || preprocessResult.emotion === "frustrated" || /返金|解約|削除|責任/.test(message))) {
-    try {
-      const output = await asteraEngine.process({ question: message, context: JSON.stringify(kb), llm: { chain: ["null"] }, outputLanguage: payload.locale === "ja-JP" ? "ja" : "en" }, { id: "customer-ai" });
-      astera = output?.material?.judgment || output?.result?.judgment || null;
-    } catch (error) {
-      astera = { error: String(error?.message || error) };
-    }
-  }
-  const missingValues = [];
-  const clarification = kb.length === 0 ? null : undefined;
-  const aiRequired = kb.length > 1 || preprocessResult.emotion === "frustrated" || preprocessResult.sub_questions?.length > 1;
+function plan(payload) {
+  const analysis = payload.analysis || {};
+  const evidence = Array.isArray(payload.evidence) ? payload.evidence : [];
+  const renderer = payload.renderer || {};
+  const contract = payload.contract || {};
+  const unresolvedAmbiguity = Number(analysis.ambiguity || 0) > 0;
+  const multiQuestion = (analysis.sub_questions || []).length > 1;
+  const multiEvidence = evidence.length > 1;
+  const humanAdaptation = ["high_pressure", "supportive"].includes(analysis.human_state?.mode);
+  const deterministicIncomplete = !String(payload.draft || "").trim() || Boolean(renderer.clarification);
+  const engineRequired = Boolean(
+    contract.engine_policy !== undefined
+    && renderer.requires_language_engine
+    && !deterministicIncomplete
+    && (unresolvedAmbiguity || (multiQuestion && multiEvidence) || (humanAdaptation && multiEvidence))
+  );
   return {
-    ai_required: aiRequired,
-    missing_values: missingValues,
-    clarification,
+    engine_required: engineRequired,
+    engine_reason: engineRequired ? "structured_multi_evidence_composition" : "deterministic_skills_sufficient",
+    missing_values: [],
+    clarification: renderer.clarification || null,
     action: null,
-    astera,
-    astera_available: Boolean(asteraEngine),
-    astera_load_error: asteraLoadError,
+    required_evidence_ids: evidence.map((item) => item.evidence_id).filter(Boolean),
+    required_question_indexes: (analysis.sub_questions || []).map((_, index) => index),
+    stop_conditions: contract.stop_conditions || [],
   };
 }
 
 function verify(payload) {
-  let answer = normalize(payload.answer);
+  let answer = normalizeText(payload.answer);
   const violations = [];
+  const evidenceIds = new Set((payload.evidence || []).map((item) => item.evidence_id).filter(Boolean));
+  const usedEvidenceIds = new Set(payload.engine_output?.used_evidence_ids || payload.renderer?.evidence_refs || []);
+  for (const evidenceId of usedEvidenceIds) if (!evidenceIds.has(evidenceId)) violations.push("unknown_evidence_reference");
   const forbidden = [
     [/\b(?:password|api[_ -]?key|secret|token)\b\s*[:=]\s*\S+/i, "secret_pattern"],
     [/(?:\/internal\/|src\/(?:system|component|feature|part)\/|\.env\b)/i, "internal_implementation"],
-    [/(?:完了しました|成功しました|refunded|deleted)/i, "unverified_action_claim"],
+    [/(?:完了しました|成功しました|返金しました|削除しました|refunded|deleted)/i, "unverified_action_claim"],
+    [/\b(?:as an ai|as a language model|qwen|hugging face|model provider)\b/i, "engine_identity"],
   ];
   for (const [pattern, code] of forbidden) {
     if (pattern.test(answer)) {
@@ -83,11 +77,17 @@ function verify(payload) {
       answer = answer.replace(pattern, "確認済みの範囲で案内します");
     }
   }
-  if (!answer) {
-    violations.push("empty_answer");
-    answer = payload.locale === "ja-JP" ? "確認できる情報が不足しています。" : "Confirmed information is insufficient.";
-  }
-  return { answer, violations };
+  if (!answer) violations.push("empty_answer");
+  const requiredQuestions = payload.plan?.required_question_indexes || [];
+  const coveredQuestions = payload.engine_output?.covered_question_indexes || payload.renderer?.covered_question_indexes || [];
+  const missing = requiredQuestions.filter((index) => !coveredQuestions.includes(index));
+  if (missing.length && payload.evidence?.length) violations.push("question_coverage_incomplete");
+  const blocking = violations.filter((code) => code !== "engine_identity");
+  return {
+    answer: answer || (payload.request?.locale === "ja-JP" ? "確認できる情報が不足しています。" : "Confirmed information is insufficient."),
+    violations: [...new Set(violations)],
+    completion: { passed: blocking.length === 0 && missing.length === 0 && Boolean(answer), missing: missing.map((index) => `sub_question:${index}`) },
+  };
 }
 
 async function handle(request) {
@@ -96,10 +96,10 @@ async function handle(request) {
   if (!requestId || !phase || !payload) throw new Error("invalid_request");
   if (Number(deadlineAt || 0) < Date.now()) throw new Error("deadline_exceeded");
   let result;
-  if (phase === "preprocess") result = preprocess(payload);
-  else if (phase === "plan") result = await plan(payload);
+  if (phase === "analyze") result = await analyze(payload);
+  else if (phase === "plan") result = plan(payload);
   else if (phase === "verify") result = verify(payload);
-  else if (phase === "ping") result = { pong: true, node: process.version, astera_available: Boolean(asteraEngine) };
+  else if (phase === "ping") result = { pong: true, node: process.version, worker_pool: pool.status() };
   else throw new Error("unsupported_phase");
   return { request_id: requestId, ok: true, result, error_code: null, duration_ms: Date.now() - started };
 }
@@ -128,6 +128,11 @@ const server = net.createServer((connection) => {
 });
 
 server.listen(socketPath, () => fs.chmodSync(socketPath, 0o600));
-for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => server.close(() => process.exit(0)));
+
+async function shutdown() {
+  server.close();
+  await pool.destroy();
+  try { fs.unlinkSync(socketPath); } catch {}
+  process.exit(0);
 }
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { void shutdown(); });

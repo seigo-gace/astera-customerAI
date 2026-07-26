@@ -1,51 +1,67 @@
-# Three-pass implementation review record
+# Controlled Customer AI implementation review record
 
-This file records the three required independent review passes. Each pass uses a different prompt and evaluates a different failure surface. Findings are applied before the next pass.
+## Fixed correction
 
-## Pass 1 — Distributed architecture and concurrency
+- Customer AI does not execute Astera itself.
+- No `kagura-engine.js`, Astera adapter, Astera bootstrap, or Astera environment variable is allowed.
+- The implementation only reuses internal engineering structures cultivated in Astera/KAGRRA: deterministic scripts, structured skills, V8 parallel workers, state capsules, evidence gates, recovery, and routine bots.
+- A language model is an exchangeable engine inside the Control Core. It cannot own routing, tools, action execution, facts, state, or completion.
 
-**Prompt:** Review concurrency, durability, idempotency, state ownership, failure recovery, and responsibility boundaries. Do not focus on style.
+## Pass 1 — Controlled execution and modular-catalog reuse
 
-Applied corrections:
-
-- Durable accept and process execution are separated.
-- Job request creation is idempotent by content hash.
-- Job and session leases use exclusive creation and stale-lease recovery.
-- Session events are append-only; `state.json` is a reconstructable snapshot.
-- Existing Gateway remains the only durable transport boundary.
-- Cloudflare owns no Customer AI source-of-truth state.
-
-## Pass 2 — Security and information protection
-
-**Prompt:** Review secrets, PII, prompt injection, unauthorized internal disclosure, action claims, and logging boundaries. Treat all external text as untrusted data.
+**Prompt:** Review whether routine work is owned by Script, structured Skill, V8 workers, and bots before a language engine is considered. Verify that modular-catalog patterns are adapted without runtime dependency.
 
 Applied corrections:
 
-- Raw-body HMAC with timestamp tolerance is mandatory.
-- Email, telephone, payment-like numbers, JWTs, private keys, and common token formats are redacted.
-- Structured fields named password, secret, token, authorization, or card are removed from outbound callbacks.
-- User text, KB text, and model output are never executed as JavaScript.
-- Internal endpoint/module/environment patterns are blocked by the Response Gate.
-- Unverified action-completion claims are removed.
+- Added `ControlledExecutionCore`.
+- Added machine-readable Execution Contract, State Capsule, Evidence list, Stop Conditions, and Uncertainty Rule.
+- Added an ACTIVE-only `$` structured `SkillRegistry`.
+- Adapted worker lifecycle, timeout, crash recovery, and one-time regeneration from `astera-worker-lifecycle-pool`.
+- Adapted deterministic human-context signals from `astera-human-context-reading`.
+- Adapted deterministic routing and normalization patterns from `astera-domain-template-routing`.
+- Kept safe JSON, logging outbox, and provider adapter boundaries as design contracts.
 
-## Pass 3 — Operations, degradation, and verification
+## Pass 2 — Engine boundary
 
-**Prompt:** Review deployability, pinned dependencies, health/readiness, bounded resources, degradation, logs, rollback, and test observability. Do not redesign fixed architecture.
+**Prompt:** Review whether the language engine can be called directly or as a standalone support agent.
 
 Applied corrections:
 
-- Node.js 22+ is validated before the Unix-socket runtime starts.
-- Astera v8 is pinned to a commit and loaded from the mounted bucket cache.
-- Model inference is disabled until a model revision is explicitly pinned.
-- GPU usage has a 35-minute rolling internal budget.
-- Readiness distinguishes persistent storage, V8, KB, and model configuration.
-- AI failures fall back to deterministic KB rendering without regeneration loops.
-- Unit, API, Node, integration, concurrency, redaction, and KB snapshot tests are included.
+- Removed direct model invocation from `CustomerAIService`.
+- Added `ControlledLanguageEngine.execute(packet)` with mandatory packet keys.
+- The engine is blocked unless the Control Core explicitly allows one call.
+- Verified Evidence and structured Skill results are mandatory.
+- Deterministic draft is generated before engine invocation.
+- Engine output cannot execute actions and must cite only provided Evidence IDs.
+- Model/provider identity is removed by the Output Guard.
 
-## Result
+## Pass 3 — V8 parallelism and bots
 
-All three review prompts are executable through:
+**Prompt:** Review light processing, routine processing, recovery, and CPU limits.
+
+Applied corrections:
+
+- Added a persistent Node.js Worker Thread pool.
+- Runs normalization, human-context, routing, question decomposition, entity extraction, and safety detection in parallel.
+- Worker timeout causes one bounded regeneration; recursive worker spawning is forbidden.
+- Added deterministic recovery, question-insight aggregation, and optional Notion KB sync bots.
+- Bots never call the language engine.
+
+## Pass 4 — Security and completion
+
+**Prompt:** Review secrets, PII, prompt injection, internal implementation leakage, unverified action claims, evidence coverage, and completion ownership.
+
+Applied corrections:
+
+- Output Guard and V8 verification are both required.
+- Completion is based on Evidence, coverage, and blocking violations—not model self-evaluation.
+- Private implementation patterns and engine identity are rejected.
+- User statements remain KB candidates and never become confirmed product facts without source evidence.
+
+## Verification commands
 
 ```bash
 python scripts/review.py --all
+pytest -q
+npm test
 ```
