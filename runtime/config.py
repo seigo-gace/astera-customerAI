@@ -27,9 +27,7 @@ class Settings:
     node_binary: str
     node_socket: Path
     node_memory_mb: int
-    astera_repo: str
-    astera_commit: str
-    astera_path: str
+    v8_worker_pool_size: int
     job_lease_seconds: int
     session_lease_seconds: int
     job_ttl_seconds: int
@@ -37,6 +35,10 @@ class Settings:
     max_input_chars: int
     process_concurrency: int
     gateway_timeout_seconds: int
+    recovery_bot_interval_seconds: int
+    insight_bot_interval_seconds: int
+    kb_sync_bot_interval_seconds: int
+    enable_kb_sync_bot: bool
 
     @classmethod
     def load(cls) -> "Settings":
@@ -53,13 +55,9 @@ class Settings:
             enable_model=os.getenv("CUSTOMER_AI_ENABLE_MODEL", "0") == "1",
             gpu_daily_budget_seconds=_int("CUSTOMER_AI_GPU_DAILY_BUDGET_SECONDS", 2100),
             node_binary=os.getenv("CUSTOMER_AI_NODE_BINARY", "node"),
-            node_socket=Path(os.getenv("CUSTOMER_AI_NODE_SOCKET", "/tmp/astera-customer-ai-v8.sock")),
+            node_socket=Path(os.getenv("CUSTOMER_AI_NODE_SOCKET", "/tmp/customer-ai-v8.sock")),
             node_memory_mb=_int("CUSTOMER_AI_NODE_MEMORY_MB", 512),
-            astera_repo=os.getenv("CUSTOMER_AI_ASTERA_REPO", "https://github.com/seigo-gace/astera_v8.git"),
-            astera_commit=os.getenv(
-                "CUSTOMER_AI_ASTERA_COMMIT", "67837b0f65ccc42fce5875fc82a1efa3561068ea"
-            ),
-            astera_path=os.getenv("CUSTOMER_AI_ASTERA_PATH", ""),
+            v8_worker_pool_size=min(4, _int("CUSTOMER_AI_V8_WORKER_POOL_SIZE", 2)),
             job_lease_seconds=_int("CUSTOMER_AI_JOB_LEASE_SECONDS", 90),
             session_lease_seconds=_int("CUSTOMER_AI_SESSION_LEASE_SECONDS", 90),
             job_ttl_seconds=_int("CUSTOMER_AI_JOB_TTL_SECONDS", 604800),
@@ -67,8 +65,14 @@ class Settings:
             max_input_chars=_int("CUSTOMER_AI_MAX_INPUT_CHARS", 20000),
             process_concurrency=_int("CUSTOMER_AI_PROCESS_CONCURRENCY", 2),
             gateway_timeout_seconds=_int("CUSTOMER_AI_GATEWAY_TIMEOUT_SECONDS", 10),
+            recovery_bot_interval_seconds=_int("CUSTOMER_AI_RECOVERY_BOT_INTERVAL_SECONDS", 60),
+            insight_bot_interval_seconds=_int("CUSTOMER_AI_INSIGHT_BOT_INTERVAL_SECONDS", 300),
+            kb_sync_bot_interval_seconds=_int("CUSTOMER_AI_KB_SYNC_BOT_INTERVAL_SECONDS", 900),
+            enable_kb_sync_bot=os.getenv("CUSTOMER_AI_ENABLE_KB_SYNC_BOT", "0") == "1",
         )
 
     def ensure_directories(self) -> None:
-        for name in ("jobs", "sessions", "kb/snapshots", "kb-candidates", "runtime", "recovery", "temporary"):
+        for name in (
+            "jobs", "sessions", "kb/snapshots", "kb-candidates", "runtime", "recovery", "temporary", "bots", "evidence"
+        ):
             (self.data_root / name).mkdir(parents=True, exist_ok=True)
