@@ -8,21 +8,50 @@ sdk_version: 6.5.1
 app_file: app.py
 pinned: false
 license: other
-short_description: Private Script/V8/Astera-first customer support runtime
+short_description: Private controlled Script/Skill/V8/Bot customer-support runtime
 ---
 
 # Astera Customer AI
 
 Private Hugging Face Space runtime for Astera customer support.
 
+## Fixed execution principle
+
+The language model is not called as a standalone customer-support agent.
+
+```text
+Input safety and normalization
+  → Controlled Execution Contract
+  → Structured `$` Skill selection
+  → V8 parallel light workers
+  → KB evidence collection
+  → Deterministic answer rendering
+  → Optional language engine inside the prepared contract
+  → V8 verification and Completion Gate
+  → Question Insight and routine bots
+```
+
+Astera itself is **not executed** in this repository. The runtime reuses engineering structures cultivated in Astera and KAGRRA—deterministic scripts, structured skills, V8 parallel processing, state capsules, evidence gates, recovery, and routine bots—without calling the Astera judgment engine.
+
 ## Responsibility
 
 - Cloudflare: public UI/API edge only.
 - Existing Webhook Gateway: durable ingress, delivery, retry, replay, spool, and TGserver routing.
-- This Space: Script processing, Node.js V8 workflow, Astera judgment materials, SQLite FTS5 KB search, optional ZeroGPU language composition, response validation, question analysis, and KB synchronization.
-- Private HF Storage Bucket mounted at `/data/customer-ai`: jobs, sessions, runtime KB snapshots, and KB improvement candidates.
+- This Space: Controlled Execution Core, structured skills, Node.js V8 worker pool, SQLite FTS5 KB search, optional ZeroGPU language composition, response validation, question analysis, and routine bots.
+- Private HF Storage Bucket mounted at `/data/customer-ai`: jobs, sessions, runtime KB snapshots, bot state, and KB improvement candidates.
 - Notion: approved Customer AI KB source of truth.
 - TGserver: long-term sanitized audit and operational logs.
+
+## Reused implementation materials
+
+The implementation adapts verified patterns from `seigo-gace/modular-catalog` without runtime dependency on that repository:
+
+- Worker lifecycle, timeout, crash recovery, one-time regeneration
+- Human-context deterministic signals
+- Deterministic routing and input normalization
+- Safe JSON and secret masking
+- Structured logging and durable outbox boundaries
+- Language-provider adapter boundary
 
 ## Required Space settings
 
@@ -63,12 +92,13 @@ The Space must not be called directly by browsers. Requests arrive through the e
 python -m pip install -r requirements-dev.txt
 node --version
 pytest -q
+npm test
 python scripts/review.py --all
 ```
 
-## Fixed external sources
+## Fixed engine source
 
-- Astera v8: `seigo-gace/astera_v8@67837b0f65ccc42fce5875fc82a1efa3561068ea`
-- Default model: `Qwen/Qwen3-4B-Instruct-2507` (revision must be supplied through `CUSTOMER_AI_MODEL_REVISION` before production inference is enabled)
-
-Astera is not an AI. It is used as an external judgment-material runtime for the primary language model and deterministic response pipeline.
+- Default language engine: `Qwen/Qwen3-4B-Instruct-2507`
+- The revision must be pinned before inference is enabled.
+- Inference stays disabled by default.
+- The engine receives an Execution Contract, selected Skill results, State Capsule, and verified Evidence. It cannot own routing, tools, action execution, or completion.
