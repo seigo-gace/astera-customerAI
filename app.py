@@ -10,12 +10,12 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-MAX_INTERNAL_BODY_BYTES = 10 * 1024 * 1024
-
 from runtime import CustomerAIService
 from runtime.schemas import CloudEvent
 from runtime.security import verify_hmac
 from runtime.storage import ConflictError, NotFoundError
+
+MAX_INTERNAL_BODY_BYTES = 10 * 1024 * 1024
 
 logging.basicConfig(level=logging.INFO)
 service = CustomerAIService()
@@ -122,10 +122,8 @@ async def recovery(request: Request) -> dict:
     return {"accepted": True, **result}
 
 
-def process_job(job_id: str) -> dict:
-    import asyncio
-
-    return asyncio.run(service.process_job(job_id))
+async def process_job(job_id: str) -> dict:
+    return await service.process_job(job_id)
 
 
 with gr.Blocks(title="Astera Customer AI") as demo:
