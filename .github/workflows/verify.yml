@@ -42,7 +42,9 @@ jobs:
 
       - name: Diagnose evidence routing for protected story cases
         if: always()
-        run: python scripts/diagnose_story_cases.py
+        run: |
+          set -o pipefail
+          python scripts/diagnose_story_cases.py 2>&1 | tee test-results/story-diagnostics.log
 
       - name: Story tests repeated three times
         if: always()
