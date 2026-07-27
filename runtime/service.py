@@ -16,7 +16,7 @@ from .kb import KBIndex
 from .model import ConversationLanguageEngine
 from .notion import NotionClient
 from .schemas import CloudEvent, JobRecord, JobResult, MessagePayload
-from .security import canonical_json, redact_text, sanitize_structure, sign_hmac, validate_identifier
+from .security import canonical_json, redact_text, sanitize_structure, sign_standard_webhook, validate_identifier
 from .storage import ConflictError, JobStore
 from .support import FeedbackStore
 from .v8 import V8Supervisor
@@ -41,10 +41,18 @@ class GatewayClient:
         }
         body = canonical_json(event)
         timestamp = str(int(time.time()))
+        event_id = str(event["id"])
         headers = {
             "content-type": "application/cloudevents+json",
-            "x-webhook-timestamp": timestamp,
-            "x-webhook-signature": sign_hmac(body, timestamp, self.settings.gateway_callback_secret),
+            "webhook-id": event_id,
+            "webhook-timestamp": timestamp,
+            "webhook-signature": sign_standard_webhook(
+                body,
+                event_id,
+                timestamp,
+                self.settings.gateway_callback_secret,
+            ),
+            "webhook-event": event_type,
         }
         async with httpx.AsyncClient(timeout=self.settings.gateway_timeout_seconds) as client:
             response = await client.post(self.settings.gateway_callback_url, content=body, headers=headers)
