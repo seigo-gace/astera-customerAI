@@ -53,6 +53,22 @@ QUERY_ALIASES: dict[str, tuple[str, ...]] = {
     "pricing": ("料金", "価格", "いくら", "費用"),
     "comparison": ("違い", "比較"),
 }
+QUERY_STOP_TERMS = {
+    "すか",
+    "ですか",
+    "ますか",
+    "現在",
+    "system",
+    "prompt",
+    "internal",
+    "admin",
+    "env",
+    "内容",
+    "全部",
+    "全部出して",
+    "教えて",
+    "ください",
+}
 
 
 @dataclass(slots=True)
@@ -211,9 +227,12 @@ class KBIndex:
         expanded: list[str] = []
         for term in raw:
             normalized = term.strip()
-            if normalized and normalized not in expanded:
+            key = normalized.lower()
+            if not normalized or key in QUERY_STOP_TERMS:
+                continue
+            if normalized not in expanded:
                 expanded.append(normalized)
-            for alias in QUERY_ALIASES.get(normalized.lower(), ()):
+            for alias in QUERY_ALIASES.get(key, ()):
                 if alias not in expanded:
                     expanded.append(alias)
         return expanded[:20]
