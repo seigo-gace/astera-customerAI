@@ -50,6 +50,10 @@ class SessionContext(BaseModel):
     unresolved_questions: list[str] = Field(default_factory=list)
     last_kb_ids: list[str] = Field(default_factory=list)
     turns: list[ConversationTurn] = Field(default_factory=list)
+    answered_question_ids: list[str] = Field(default_factory=list)
+    question_ledger: list[dict[str, Any]] = Field(default_factory=list)
+    evidence_cache: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    last_blueprint: dict[str, Any] = Field(default_factory=dict)
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
