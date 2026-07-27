@@ -43,7 +43,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS kb_fts USING fts5(
 MIN_EVIDENCE_SCORE = 5.0
 QUERY_ALIASES: dict[str, tuple[str, ...]] = {
     "credit": ("クレジット", "残高", "付与", "決済"),
-    "billing": ("料金", "価格", "支払", "決済", "請求", "プラン"),
+    "billing": ("料金", "価格", "費用", "プラン"),
     "account": ("アカウント", "ログイン", "認証", "退会", "削除"),
     "webhook-gateway": ("Webhook Gateway", "webhook", "配送", "再送", "復旧"),
     "astera": ("Astera", "アステラ", "判断材料", "主役AI"),
