@@ -12,6 +12,15 @@ const TOPICS = [
   ["webhook", /webhook|配送|再送|届か/i],
   ["api", /api|キー|key/i],
   ["corporate", /法人|スポンサー|投資|提携|enterprise|sponsor/i],
+  ["incident", /障害|停止|落ち|接続でき|incident|outage/i],
+];
+
+const HUMAN_SIGNALS = [
+  ["anger", /ふざけ|怒|むかつ|舐め|使え|イラ|angry|mad/i, 3],
+  ["urgency", /急ぎ|至急|今すぐ|早く|今日中|urgent|asap/i, 2],
+  ["confusion", /わから|不明|迷|混乱|どうすれば|confused|unknown/i, 2],
+  ["precision", /正確|検証|根拠|事実|嘘|verify|evidence/i, 2],
+  ["scope", /全部|すべて|完璧|抜け漏れ|端折るな|all|complete/i, 1],
 ];
 
 function normalize(text) {
@@ -35,10 +44,75 @@ function extractDetails(message) {
   if (errorCode) details.error_code = errorCode[1];
   const timing = message.match(/今日|昨日|一昨日|今朝|昨夜|さっき|先ほど/);
   if (timing) details.relative_time = timing[0];
+  const paymentDisplay = message.match(/決済(?:済み|完了|失敗|保留)|支払い(?:済み|完了|失敗|保留)/);
+  if (paymentDisplay) details.payment_display = paymentDisplay[0];
+  const provider = message.match(/Stripe|Square|GitHub|Slack|Telegram|generic/i);
+  if (provider) details.provider = provider[0];
   return details;
 }
 
-function analyzeTurn(payload) {
+function humanContext(message) {
+  const hits = HUMAN_SIGNALS.filter(([, pattern]) => pattern.test(message));
+  const load = hits.reduce((sum, [, , weight]) => sum + weight, 0);
+  const signals = hits.map(([name]) => name);
+  let mode = "direct";
+  if (signals.includes("anger") || load >= 5) mode = "fix_first";
+  else if (signals.includes("confusion")) mode = "guided";
+  else if (signals.includes("precision")) mode = "evidence_strict";
+  return { mode, load, signals };
+}
+
+function splitQuestions(message) {
+  const normalized = normalize(message);
+  const segments = normalized
+    .split(/[?？\n]+|(?<=。)/)
+    .map((item) => item.replace(/。$/, "").trim())
+    .filter(Boolean);
+  const expanded = [];
+  for (const segment of segments) {
+    if (segment.length > 35 && /(?:それと|あと|また|さらに|及び|および)/.test(segment)) {
+      expanded.push(...segment.split(/(?:それと|あと|また|さらに|及び|および)/).map((item) => item.trim()).filter(Boolean));
+    } else {
+      expanded.push(segment);
+    }
+  }
+  return (expanded.length ? expanded : [normalized]).slice(0, 8).map((text, index) => ({ id: `q${index + 1}`, text, kind: "question" }));
+}
+
+function dynamicRequirements(topic, message) {
+  const requirements = [];
+  if (topic === "credit") {
+    if (/反映|付与|残高|現在|いくつ|どれくらい/.test(message)) requirements.push("credit_balance", "credit_grant_status");
+    if (/買|購入|支払|決済/.test(message)) requirements.push("payment_status");
+  }
+  if (topic === "billing") requirements.push("payment_status", "subscription_status");
+  if (topic === "account") requirements.push("account_status");
+  if (topic === "webhook") requirements.push("webhook_delivery_status");
+  if (topic === "api" && /キー|key/i.test(message)) requirements.push("api_key_status");
+  if (topic === "incident") requirements.push("service_incident_status");
+  return [...new Set(requirements)].slice(0, 6);
+}
+
+function requiredInformation(topic, requirements, message, confirmedDetails) {
+  const required = [];
+  if (requirements.includes("payment_status") && confirmedDetails.approximate_hour === undefined && !confirmedDetails.relative_time) required.push("購入または決済した時刻");
+  if (topic === "credit" && !confirmedDetails.payment_display && !/決済(?:済み|完了|失敗|保留)/.test(message)) required.push("決済画面に表示されている状態");
+  if (topic === "webhook") {
+    if (!confirmedDetails.provider) required.push("WebhookのProvider名");
+    if (!confirmedDetails.relative_time && confirmedDetails.approximate_hour === undefined) required.push("送信した時刻");
+  }
+  if (/エラー|error/i.test(message) && !confirmedDetails.error_code) required.push("表示されているエラーコードまたは文面");
+  return [...new Set(required)].slice(0, 8);
+}
+
+function retrievalQueries(message, questions, goal, topic, unresolved) {
+  const queries = questions.map((question) => `${question.text} ${topic}`.trim());
+  if (goal && goal !== message) queries.push(`${goal} ${topic}`.trim());
+  for (const item of unresolved.slice(-3)) queries.push(`${item} ${topic}`.trim());
+  return [...new Set(queries.map(normalize).filter(Boolean))].slice(0, 6);
+}
+
+async function prepareSupport(payload) {
   const message = normalize(payload.message);
   const context = payload.context || {};
   const explicitTopic = detectTopic(message);
@@ -47,13 +121,16 @@ function analyzeTurn(payload) {
   const activeTopic = explicitTopic || context.active_topic || "general";
   const newTopic = Boolean(explicitTopic && context.active_topic && explicitTopic !== context.active_topic && !followUp);
   const userGoal = newTopic || !context.user_goal ? message : context.user_goal;
-  const unresolved = Array.isArray(context.unresolved_questions) ? context.unresolved_questions.slice(-3) : [];
-  const retrievalParts = [message];
-  if (followUp && userGoal && userGoal !== message) retrievalParts.push(userGoal);
-  if (activeTopic && activeTopic !== "general") retrievalParts.push(activeTopic);
-  retrievalParts.push(...unresolved);
-  const retrievalQuery = [...new Set(retrievalParts.map(normalize).filter(Boolean))].join(" ").slice(0, 1200);
-  const questionCount = message.split(/[?？]/).filter((item) => item.trim()).length;
+  const confirmedDetails = { ...(context.confirmed_details || {}), ...extractDetails(message) };
+  const unresolved = Array.isArray(context.unresolved_questions) ? context.unresolved_questions.slice(-5) : [];
+
+  const [questions, human, requirements] = await Promise.all([
+    Promise.resolve(splitQuestions(message)),
+    Promise.resolve(humanContext(message)),
+    Promise.resolve(dynamicRequirements(activeTopic, message)),
+  ]);
+  const requiredInfo = requiredInformation(activeTopic, requirements, message, confirmedDetails);
+  const complexity = requirements.length ? "dynamic" : questions.length > 1 ? "multi_question" : followUp ? "multi_turn" : human.mode !== "direct" ? "adapted" : "simple";
   return {
     message,
     follow_up: followUp,
@@ -62,30 +139,58 @@ function analyzeTurn(payload) {
     active_topic: activeTopic,
     user_goal: userGoal,
     new_topic: newTopic,
-    confirmed_details: { ...(context.confirmed_details || {}), ...extractDetails(message) },
-    retrieval_query: retrievalQuery,
-    question_count: Math.max(1, questionCount),
+    confirmed_details: confirmedDetails,
+    sub_questions: questions,
+    retrieval_queries: retrievalQueries(message, questions, userGoal, activeTopic, unresolved),
+    dynamic_requirements: requirements,
+    required_information: requiredInfo,
+    human_context: human,
+    response_mode: human.mode,
+    complexity,
+    answer_order: human.mode === "fix_first"
+      ? ["direct_answer", "current_status", "required_action", "reason", "exceptions"]
+      : ["direct_answer", "reason", "steps", "exceptions", "next_action"],
   };
 }
 
-function verifyTurn(payload) {
-  let answer = normalize(payload.answer);
+function verifySupport(payload) {
+  const response = payload.response || {};
+  const blueprint = payload.blueprint || {};
+  const analysis = payload.analysis || {};
+  const answer = normalize(response.answer);
   const violations = [];
-  const availableKbIds = new Set(payload.available_kb_ids || []);
-  for (const kbId of payload.used_kb_ids || []) {
-    if (!availableKbIds.has(kbId)) violations.push("unknown_kb_reference");
-  }
+  const availableEvidenceIds = new Set(blueprint.available_evidence_ids || []);
+  const usedEvidenceIds = [...new Set(response.used_evidence_ids || [])];
+  for (const evidenceId of usedEvidenceIds) if (!availableEvidenceIds.has(evidenceId)) violations.push("unknown_evidence_reference");
   if (!answer) violations.push("empty_answer");
   if (/\b(?:as an ai|as a language model|qwen|hugging face|model provider)\b/i.test(answer)) violations.push("engine_identity");
   if (/(?:\/internal\/|src\/(?:system|component|feature|part)\/|\.env\b)/i.test(answer)) violations.push("internal_implementation");
   if (/(?:返金しました|削除しました|解約しました|処理しました|refunded|deleted|cancelled)/i.test(answer)) violations.push("unverified_action_claim");
-  const expectedTopic = payload.analysis?.active_topic || "";
-  const returnedTopic = payload.returned_topic || expectedTopic;
-  if (payload.analysis?.follow_up && expectedTopic && returnedTopic && expectedTopic !== returnedTopic) violations.push("conversation_topic_drift");
+
+  const questionIds = new Set((blueprint.questions || []).map((item) => item.id));
+  const answeredIds = new Set(response.answered_question_ids || []);
+  const unresolved = Array.isArray(response.unresolved_questions) ? response.unresolved_questions.filter(Boolean) : [];
+  const missingCoverage = [...questionIds].filter((id) => !answeredIds.has(id));
+  if (missingCoverage.length > unresolved.length) violations.push("question_coverage_incomplete");
+  if (unresolved.length && !(response.requested_information || []).length && !blueprint.pending_requirements?.length) violations.push("unresolved_without_next_information");
+  if (!usedEvidenceIds.length && availableEvidenceIds.size && answeredIds.size) violations.push("grounding_missing");
+  if (analysis.follow_up && response.active_topic && analysis.active_topic && response.active_topic !== analysis.active_topic) violations.push("conversation_topic_drift");
+  if (analysis.follow_up && response.user_goal && analysis.user_goal && response.user_goal !== analysis.user_goal) violations.push("conversation_goal_drift");
+  if (/確認できる情報が不足しています|詳しい情報を教えてください/.test(answer) && !(response.requested_information || []).length) violations.push("generic_non_answer");
+  if ((blueprint.questions || []).length > 1 && answer.length < 80 && !unresolved.length) violations.push("multi_question_answer_too_short");
+
   return {
     answer,
     passed: violations.length === 0,
     violations: [...new Set(violations)],
+    missing_question_ids: missingCoverage,
+    repair_instructions: {
+      answer_missing_questions: missingCoverage,
+      use_only_evidence_ids: [...availableEvidenceIds],
+      preserve_goal: analysis.user_goal,
+      preserve_topic: analysis.active_topic,
+      state_exact_missing_information: true,
+    },
   };
 }
 
@@ -95,9 +200,9 @@ async function handle(request) {
   if (!requestId || !phase || payload === undefined) throw new Error("invalid_request");
   if (Number(deadlineAt || 0) < Date.now()) throw new Error("deadline_exceeded");
   let result;
-  if (phase === "analyze_turn") result = analyzeTurn(payload);
-  else if (phase === "verify_turn") result = verifyTurn(payload);
-  else if (phase === "ping") result = { pong: true, node: process.version };
+  if (phase === "prepare_support" || phase === "analyze_turn") result = await prepareSupport(payload);
+  else if (phase === "verify_support" || phase === "verify_turn") result = verifySupport(payload);
+  else if (phase === "ping") result = { pong: true, node: process.version, support_pipeline: "v2" };
   else throw new Error("unsupported_phase");
   return { request_id: requestId, ok: true, result, error_code: null, duration_ms: Date.now() - started };
 }
