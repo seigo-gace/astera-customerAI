@@ -3,7 +3,7 @@ from pathlib import Path
 from runtime.kb import KBIndex
 
 
-def test_snapshot_filters_unpublished_and_searches(tmp_path: Path):
+def build_index(tmp_path: Path) -> KBIndex:
     index = KBIndex(tmp_path)
     pages = [
         {
@@ -27,5 +27,16 @@ def test_snapshot_filters_unpublished_and_searches(tmp_path: Path):
         },
     ]
     index.build_snapshot(version="v1", pages=pages)
+    return index
+
+
+def test_snapshot_filters_unpublished_and_searches(tmp_path: Path):
+    index = build_index(tmp_path)
     hits = index.search("クレジット 反映")
+    assert [hit.kb_id for hit in hits] == ["kb1"]
+
+
+def test_context_expanded_query_keeps_original_japanese_match(tmp_path: Path):
+    index = build_index(tmp_path)
+    hits = index.search("購入したクレジットが反映されません credit")
     assert [hit.kb_id for hit in hits] == ["kb1"]
