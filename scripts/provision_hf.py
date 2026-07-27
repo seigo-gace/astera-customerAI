@@ -37,7 +37,7 @@ def main() -> None:
         repo_id=SPACE_ID,
         repo_type="space",
         folder_path=str(ROOT),
-        commit_message=os.environ.get("HF_COMMIT_MESSAGE", "Deploy controlled Customer AI runtime"),
+        commit_message=os.environ.get("HF_COMMIT_MESSAGE", "Deploy conversation-aware Customer AI runtime"),
         ignore_patterns=[".git/**", ".github/**", ".pytest_cache/**", "__pycache__/**", "*.pyc", ".env", "docs/**", "tests/**"],
     )
 
@@ -49,11 +49,12 @@ def main() -> None:
         "CUSTOMER_AI_GPU_DAILY_BUDGET_SECONDS": "2100",
         "CUSTOMER_AI_NODE_BINARY": "node",
         "CUSTOMER_AI_NODE_SOCKET": "/tmp/customer-ai-v8.sock",
-        "CUSTOMER_AI_NODE_MEMORY_MB": "512",
-        "CUSTOMER_AI_V8_WORKER_POOL_SIZE": "2",
-        "CUSTOMER_AI_RECOVERY_BOT_INTERVAL_SECONDS": "60",
-        "CUSTOMER_AI_INSIGHT_BOT_INTERVAL_SECONDS": "300",
-        "CUSTOMER_AI_ENABLE_KB_SYNC_BOT": "0",
+        "CUSTOMER_AI_NODE_MEMORY_MB": "384",
+        "CUSTOMER_AI_SESSION_CACHE_TTL_SECONDS": "1800",
+        "CUSTOMER_AI_SESSION_CACHE_MAX_SESSIONS": "256",
+        "CUSTOMER_AI_SESSION_CACHE_MAX_TURNS": "12",
+        "CUSTOMER_AI_KB_CACHE_TTL_SECONDS": "120",
+        "CUSTOMER_AI_KB_CACHE_MAX_ENTRIES": "256",
         "NOTION_DATA_SOURCE_ID": "2a2e5dd3-8492-45b9-a450-b362d02794b4",
         "DEPLOYED_GITHUB_COMMIT": os.environ.get("GITHUB_SHA", "manual"),
     }
@@ -64,6 +65,7 @@ def main() -> None:
     zero_requested = False
     try:
         from huggingface_hub import SpaceHardware
+
         candidates = [str(item.value) for item in SpaceHardware if "zero" in str(item.value).lower()]
         if candidates:
             api.request_space_hardware(SPACE_ID, hardware=candidates[0], sleep_time=1)

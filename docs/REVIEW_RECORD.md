@@ -1,62 +1,60 @@
-# Controlled Customer AI implementation review record
+# Customer AI conversation-quality review record
 
-## Fixed correction
+## Corrected focus
 
-- Customer AI does not execute Astera itself.
-- No `kagura-engine.js`, Astera adapter, Astera bootstrap, or Astera environment variable is allowed.
-- The implementation only reuses internal engineering structures cultivated in Astera/KAGRRA: deterministic scripts, structured skills, V8 parallel workers, state capsules, evidence gates, recovery, and routine bots.
-- A language model is an exchangeable engine inside the Control Core. It cannot own routing, tools, action execution, facts, state, or completion.
+The purpose is not to install every reusable mechanism. The purpose is to improve the lightweight model's answer accuracy across the first question and multiple follow-up turns.
 
-## Pass 1 — Controlled execution and modular-catalog reuse
+The runtime must preserve:
 
-**Prompt:** Review whether routine work is owned by Script, structured Skill, V8 workers, and bots before a language engine is considered. Verify that modular-catalog patterns are adapted without runtime dependency.
+- what the user is trying to solve
+- the current topic
+- confirmed details already supplied
+- unanswered points
+- the latest bounded conversation turns
+- the KB pages relevant to the continuing conversation
 
-Applied corrections:
+## Removed as unnecessary
 
-- Added `ControlledExecutionCore`.
-- Added machine-readable Execution Contract, State Capsule, Evidence list, Stop Conditions, and Uncertainty Rule.
-- Added an ACTIVE-only `$` structured `SkillRegistry`.
-- Adapted worker lifecycle, timeout, crash recovery, and one-time regeneration from `astera-worker-lifecycle-pool`.
-- Adapted deterministic human-context signals from `astera-human-context-reading`.
-- Adapted deterministic routing and normalization patterns from `astera-domain-template-routing`.
-- Kept safe JSON, logging outbox, and provider adapter boundaries as design contracts.
+- generic structured-skill registry
+- generated `$customer-ai.*` skills
+- large generic execution contracts
+- routine bot supervisor
+- question-insight automation
+- persistent Worker Thread pool
+- six-way analysis worker split
 
-## Pass 2 — Engine boundary
+These mechanisms added weight without directly improving the user's multi-turn answer continuity.
 
-**Prompt:** Review whether the language engine can be called directly or as a standalone support agent.
+## Remaining processing path
 
-Applied corrections:
+```text
+Current message
++ bounded session context
+→ lightweight V8 turn analysis
+→ context-expanded KB search with short query cache
+→ lightweight model response using recent turns and KB
+→ V8 consistency verification
+→ bounded session context update
+```
 
-- Removed direct model invocation from `CustomerAIService`.
-- Added `ControlledLanguageEngine.execute(packet)` with mandatory packet keys.
-- The engine is blocked unless the Control Core explicitly allows one call.
-- Verified Evidence and structured Skill results are mandatory.
-- Deterministic draft is generated before engine invocation.
-- Engine output cannot execute actions and must cite only provided Evidence IDs.
-- Model/provider identity is removed by the Output Guard.
+## Cache rules
 
-## Pass 3 — V8 parallelism and bots
+- Session context is cached in memory for fast follow-ups.
+- The same context is persisted to the mounted private bucket for restart recovery.
+- Only a bounded number of recent turns is retained.
+- KB query results use a short bounded cache.
+- No unlimited transcript or unlimited KB result cache is allowed.
 
-**Prompt:** Review light processing, routine processing, recovery, and CPU limits.
+## Answer-quality checks
 
-Applied corrections:
-
-- Added a persistent Node.js Worker Thread pool.
-- Runs normalization, human-context, routing, question decomposition, entity extraction, and safety detection in parallel.
-- Worker timeout causes one bounded regeneration; recursive worker spawning is forbidden.
-- Added deterministic recovery, question-insight aggregation, and optional Notion KB sync bots.
-- Bots never call the language engine.
-
-## Pass 4 — Security and completion
-
-**Prompt:** Review secrets, PII, prompt injection, internal implementation leakage, unverified action claims, evidence coverage, and completion ownership.
-
-Applied corrections:
-
-- Output Guard and V8 verification are both required.
-- Completion is based on Evidence, coverage, and blocking violations—not model self-evaluation.
-- Private implementation patterns and engine identity are rejected.
-- User statements remain KB candidates and never become confirmed product facts without source evidence.
+1. A follow-up without a repeated product name must keep the previous active topic.
+2. The original user goal must remain available to the model.
+3. Already answered questions must not be asked again.
+4. New details in a follow-up must be merged into confirmed details.
+5. The KB search query must include the current message and prior goal when necessary.
+6. The model may cite only KB IDs supplied in the current packet.
+7. A response that drifts to another topic must be rejected.
+8. If the model is unavailable, the confirmed KB answer remains usable.
 
 ## Verification commands
 

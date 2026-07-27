@@ -14,8 +14,6 @@ JobStatus = Literal[
     "queued_processing",
     "processing",
     "awaiting_clarification",
-    "awaiting_confirmation",
-    "awaiting_action",
     "retrying",
     "degraded",
     "completed",
@@ -34,6 +32,25 @@ class MessagePayload(BaseModel):
     @classmethod
     def safe_identifier(cls, value: str) -> str:
         return validate_identifier(value)
+
+
+class ConversationTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    text: str = Field(min_length=1, max_length=8000)
+    message_id: str = ""
+    kb_ids: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class SessionContext(BaseModel):
+    session_id: str
+    user_goal: str = ""
+    active_topic: str = ""
+    confirmed_details: dict[str, Any] = Field(default_factory=dict)
+    unresolved_questions: list[str] = Field(default_factory=list)
+    last_kb_ids: list[str] = Field(default_factory=list)
+    turns: list[ConversationTurn] = Field(default_factory=list)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class CloudEvent(BaseModel):
@@ -80,13 +97,13 @@ class JobRecord(BaseModel):
 class JobResult(BaseModel):
     job_id: str
     session_id: str
-    status: Literal["completed", "awaiting_clarification", "awaiting_confirmation", "failed"]
+    status: Literal["completed", "awaiting_clarification", "failed"]
     answer: str
-    kb_ids: list[str] = []
+    kb_ids: list[str] = Field(default_factory=list)
     ai_invoked: bool = False
-    action: dict[str, Any] | None = None
     clarification: str | None = None
-    facts: list[str] = []
+    facts: list[str] = Field(default_factory=list)
+    context_used: bool = False
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -103,6 +120,6 @@ class KBHit(BaseModel):
 class NodeResponse(BaseModel):
     request_id: str
     ok: bool
-    result: dict[str, Any] = {}
+    result: dict[str, Any] = Field(default_factory=dict)
     error_code: str | None = None
     duration_ms: int = 0

@@ -1,206 +1,205 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from .security import contains_internal_implementation, redact_text, sanitize_structure
-from .skills import SkillRegistry, SkillResult
+from .conversation import ConversationCache
+from .schemas import SessionContext
+from .security import contains_internal_implementation, redact_text
 from .v8 import V8Unavailable
 
 
 @dataclass(slots=True)
-class ControlOutcome:
+class ConversationOutcome:
     status: str
     answer: str
     kb_ids: list[str]
     facts: list[str]
     engine_invoked: bool
     clarification: str | None
-    state: dict[str, Any]
-    insight: dict[str, Any]
+    context_used: bool
+    analysis: dict[str, Any]
     violations: list[str]
-    execution: dict[str, Any]
 
 
-class ControlledExecutionCore:
-    """Owns routing, skills, evidence, engine permission, verification, and completion."""
+class ConversationCore:
+    """Keeps one user's goal and conversation coherent across follow-up turns."""
 
-    def __init__(self, *, v8: Any, engine: Any, skills: SkillRegistry):
+    def __init__(
+        self,
+        *,
+        v8: Any,
+        engine: Any,
+        cache: ConversationCache,
+        search: Callable[..., list[Any]],
+    ) -> None:
         self.v8 = v8
         self.engine = engine
-        self.skills = skills
+        self.cache = cache
+        self.search = search
 
-    async def execute(self, *, job_id: str, request: Any, session: dict[str, Any], search: Callable[..., list[Any]]) -> ControlOutcome:
-        analysis = await self._analyze(request, session)
-        intake_context = {"job_id": job_id, "request": request, "analysis": analysis, "session": session}
-        intake = await self.skills.execute(self.skills.select("intake", required_tags=("control", "state")), intake_context)
-        intake_map = self._result_map(intake)
-        contract = dict(intake_map["$customer-ai.execution-contract"].output["execution_contract"])
-        state_capsule = dict(intake_map["$customer-ai.state-capsule"].output["state_capsule"])
-
-        query = str(analysis.get("search_query") or request.message)
-        hits = search(query, limit=5)
-        evidence = [
+    async def execute(self, *, request: Any) -> ConversationOutcome:
+        context = self.cache.get(request.session_id)
+        compact_context = self.cache.compact(context)
+        analysis = await self._analyze(request.message, compact_context)
+        hits = self.search(str(analysis.get("retrieval_query") or request.message), limit=4)
+        kb_evidence = [
             {
-                "evidence_id": f"kb:{hit.kb_id}",
-                "kind": "confirmed_kb",
-                "verified": True,
-                "question": hit.question,
-                "short_answer": hit.short_answer,
-                "body": hit.body,
-                "answer_boundary": hit.answer_boundary,
-                "target": hit.target,
+                "kb_id": hit.kb_id,
+                "question": hit.question[:600],
+                "short_answer": hit.short_answer[:1000],
+                "body": hit.body[:1800],
+                "answer_boundary": hit.answer_boundary[:600],
+                "target": hit.target[:160],
             }
-            for hit in hits
+            for hit in hits[:4]
         ]
-        evidence_context = {**intake_context, "state_capsule": state_capsule, "execution_contract": contract, "hits": hits, "evidence": evidence}
-        evidence_results = await self.skills.execute(self.skills.select("evidence", required_tags=("evidence", "boundary")), evidence_context)
-        compose_results = await self.skills.execute(self.skills.select("compose", required_tags=("compose", "script")), evidence_context)
-        renderer = self._result_map(compose_results)["$customer-ai.deterministic-renderer"].output
-        draft = str(renderer.get("draft") or "")
-        skill_packet = [item.as_dict() for item in [*intake, *evidence_results, *compose_results]]
-
-        plan = await self._plan(
-            request=request.model_dump(mode="json"), analysis=analysis, state_capsule=state_capsule,
-            contract=contract, evidence=evidence, skill_results=skill_packet, draft=draft, renderer=renderer,
-        )
-        allow_engine = bool(renderer.get("requires_language_engine") and plan.get("engine_required") and evidence and self.engine.available())
-        contract["engine_policy"] = {
-            **dict(contract.get("engine_policy") or {}),
-            "allow": allow_engine,
-            "reason": plan.get("engine_reason") or ("not_required" if not allow_engine else "controlled_composition"),
-        }
-
-        answer = draft
+        fallback = render_fallback(request.locale, hits, analysis)
+        answer = fallback["answer"]
+        clarification = fallback["clarification"]
+        unresolved = list(context.unresolved_questions)
+        used_kb_ids = [hit.kb_id for hit in hits]
+        returned_goal = str(analysis.get("user_goal") or context.user_goal or request.message)
+        returned_topic = str(analysis.get("active_topic") or context.active_topic or "general")
         engine_invoked = False
-        engine_output: dict[str, Any] = {}
-        if allow_engine:
-            packet = {
-                "execution_contract": contract,
-                "state_capsule": state_capsule,
-                "analysis": analysis,
-                "skill_results": skill_packet,
-                "evidence": evidence,
-                "plan": plan,
-                "draft": draft,
-            }
+
+        packet = {
+            "message": request.message[:8000],
+            "conversation": compact_context,
+            "analysis": analysis,
+            "kb_evidence": kb_evidence,
+            "response_rules": {
+                "continue_same_user_goal": True,
+                "answer_current_follow_up": True,
+                "do_not_repeat_answered_questions": True,
+                "ask_only_for_missing_information": True,
+                "do_not_invent_product_facts": True,
+                "do_not_claim_unexecuted_actions": True,
+                "locale": request.locale,
+            },
+        }
+        if self.engine.available():
             try:
-                engine_output = self.engine.execute(packet)
-                used = set(engine_output.get("used_evidence_ids") or [])
-                available = {item["evidence_id"] for item in evidence}
-                if not used.issubset(available):
-                    raise ValueError("engine_used_unknown_evidence")
-                answer = str(engine_output.get("answer") or draft)
+                generated = await asyncio.to_thread(self.engine.execute, packet)
+                available_ids = {item["kb_id"] for item in kb_evidence}
+                claimed_ids = {str(item) for item in generated.get("used_kb_ids", [])}
+                if not claimed_ids.issubset(available_ids):
+                    raise ValueError("unknown_kb_reference")
+                if kb_evidence and not claimed_ids:
+                    raise ValueError("kb_grounding_required")
+                if not kb_evidence and not generated.get("needs_clarification"):
+                    raise ValueError("clarification_required_without_kb")
+                answer = str(generated["answer"]).strip()
+                returned_goal = str(generated.get("user_goal") or returned_goal).strip()
+                returned_topic = str(generated.get("active_topic") or returned_topic).strip()
+                unresolved = [str(item).strip() for item in generated.get("unresolved_questions", []) if str(item).strip()]
+                used_kb_ids = list(claimed_ids)
+                clarification = answer if generated.get("needs_clarification") else None
                 engine_invoked = True
             except Exception:
-                answer = draft
-                engine_output = {}
+                answer = fallback["answer"]
+                clarification = fallback["clarification"]
 
         verification = await self._verify(
-            request=request.model_dump(mode="json"), answer=answer, analysis=analysis, plan=plan,
-            contract=contract, evidence=evidence, engine_output=engine_output, renderer=renderer,
+            answer=answer,
+            analysis=analysis,
+            returned_topic=returned_topic,
+            used_kb_ids=used_kb_ids,
+            available_kb_ids=[item["kb_id"] for item in kb_evidence],
         )
-        answer = str(verification.get("answer") or answer)
-        guard_context = {**evidence_context, "answer": answer, "verification": verification}
-        guard_results = await self.skills.execute(self.skills.select("guard", required_tags=("security", "output")), guard_context)
-        guard = self._result_map(guard_results)["$customer-ai.output-guard"].output
-        violations = list(dict.fromkeys([*(verification.get("violations") or []), *(guard.get("violations") or [])]))
+        violations = list(verification.get("violations") or [])
+        if not verification.get("passed", False):
+            answer = fallback["answer"]
+            clarification = fallback["clarification"]
+            returned_topic = str(analysis.get("active_topic") or returned_topic)
+            used_kb_ids = [hit.kb_id for hit in hits]
+            engine_invoked = False
 
-        safe_answer = redact_text(answer).text.strip()
-        if contains_internal_implementation(safe_answer):
+        answer = redact_text(answer).text.strip()
+        if contains_internal_implementation(answer):
             violations.append("internal_implementation")
-            safe_answer = (
-                "内部構成の詳細は公開していません。利用方法と問題解決に必要な範囲で案内します。"
+            answer = (
+                "内部構成の詳細ではなく、利用方法と問題解決に必要な範囲で案内します。"
                 if request.locale == "ja-JP"
-                else "Private implementation details are not disclosed. I can explain supported use and resolution steps."
+                else "I can explain supported use and resolution steps without private implementation details."
             )
-        clarification = renderer.get("clarification") or engine_output.get("clarification") or plan.get("clarification")
-        completion = verification.get("completion") or {}
-        if not evidence and not clarification:
-            clarification = (
-                "確認できる情報が不足しています。対象の機能、現在の画面、表示されているエラーを教えてください。"
-                if request.locale == "ja-JP"
-                else "I need a little more confirmed context. Tell me the feature, current screen, and shown error."
-            )
-        if violations or not guard.get("guard_passed", False) or not completion.get("passed", False):
-            if not evidence:
-                clarification = clarification or safe_answer
-            elif violations:
-                safe_answer = draft
+            clarification = answer
 
-        status = "awaiting_clarification" if clarification and not evidence else "completed"
-        if status == "awaiting_clarification":
-            safe_answer = str(clarification)
-        state = {
-            **state_capsule,
-            "active_topic": analysis.get("intent", state_capsule.get("active_topic", "general")),
-            "intent": analysis.get("intent", "general"),
-            "confirmed_values": {**dict(state_capsule.get("confirmed_values") or {}), **dict(analysis.get("entities") or {})},
-            "missing_values": list(plan.get("missing_values") or []),
-            "pending_action": plan.get("action"),
-            "last_kb_ids": [hit.kb_id for hit in hits],
-            "emotion": analysis.get("human_state", {}).get("mode", "stable"),
-            "resolution": "pending_feedback" if status == "completed" else "unresolved",
-        }
-        insight_context = {**evidence_context, "status": status, "answer": safe_answer, "state": state}
-        insight_results = await self.skills.execute(self.skills.select("insight", required_tags=("kb", "bot")), insight_context)
-        insight = self._result_map(insight_results)["$customer-ai.question-insight"].output["insight"]
-        all_skills = [*skill_packet, *[item.as_dict() for item in guard_results], *[item.as_dict() for item in insight_results]]
-        execution = {
-            "control_core": "$controlled-execution-core-derived",
-            "selected_skill_ids": [item["skill_id"] for item in all_skills],
-            "evidence_ids": [item["evidence_id"] for item in evidence],
-            "engine_allowed": allow_engine,
-            "engine_invoked": engine_invoked,
-            "engine_reason": contract["engine_policy"]["reason"],
-            "v8_parallel_workers": analysis.get("worker_results", []),
-            "completion": completion,
-        }
-        return ControlOutcome(
-            status=status, answer=safe_answer, kb_ids=[hit.kb_id for hit in hits], facts=[hit.short_answer for hit in hits],
-            engine_invoked=engine_invoked, clarification=str(clarification) if clarification else None, state=state,
-            insight=insight, violations=list(dict.fromkeys(violations)), execution=sanitize_structure(execution),
+        status = "awaiting_clarification" if clarification else "completed"
+        updated = SessionContext(
+            session_id=request.session_id,
+            user_goal=returned_goal[:1000],
+            active_topic=returned_topic[:160],
+            confirmed_details=dict(analysis.get("confirmed_details") or context.confirmed_details),
+            unresolved_questions=unresolved,
+            last_kb_ids=used_kb_ids,
+            turns=context.turns,
+        )
+        updated = self.cache.append_turns(
+            updated,
+            user_text=request.message,
+            assistant_text=answer,
+            message_id=request.message_id,
+            kb_ids=used_kb_ids,
+        )
+        self.cache.save(updated)
+        return ConversationOutcome(
+            status=status,
+            answer=answer,
+            kb_ids=used_kb_ids,
+            facts=[hit.short_answer for hit in hits],
+            engine_invoked=engine_invoked,
+            clarification=clarification,
+            context_used=bool(analysis.get("context_used")),
+            analysis=analysis,
+            violations=list(dict.fromkeys(violations)),
         )
 
-    async def _analyze(self, request: Any, session: dict[str, Any]) -> dict[str, Any]:
+    async def _analyze(self, message: str, context: dict[str, Any]) -> dict[str, Any]:
         try:
-            return await self.v8.request("analyze", {"message": request.message, "locale": request.locale, "session": session})
+            return await self.v8.request("analyze_turn", {"message": message, "context": context})
         except V8Unavailable:
-            return fallback_analysis(request.message, request.locale)
-
-    async def _plan(self, **payload: Any) -> dict[str, Any]:
-        try:
-            return await self.v8.request("plan", payload)
-        except V8Unavailable:
-            return fallback_plan(payload)
+            active_topic = str(context.get("active_topic") or "general")
+            goal = str(context.get("user_goal") or message)
+            query = " ".join(item for item in (message, goal, active_topic) if item and item != "general")
+            return {
+                "message": message,
+                "follow_up": bool(context.get("user_goal")),
+                "context_used": bool(context.get("user_goal") or context.get("turns")),
+                "active_topic": active_topic,
+                "user_goal": goal,
+                "confirmed_details": dict(context.get("confirmed_details") or {}),
+                "retrieval_query": query,
+            }
 
     async def _verify(self, **payload: Any) -> dict[str, Any]:
         try:
-            return await self.v8.request("verify", payload)
+            return await self.v8.request("verify_turn", payload)
         except V8Unavailable:
             answer = str(payload.get("answer") or "").strip()
-            return {"answer": answer, "violations": [], "completion": {"passed": bool(answer), "missing": []}}
-
-    @staticmethod
-    def _result_map(results: list[SkillResult]) -> dict[str, SkillResult]:
-        mapped = {item.skill_id: item for item in results}
-        blocked = [item for item in results if item.status in {"blocked", "failed"}]
-        if blocked:
-            raise RuntimeError("structured_skill_failure:" + ",".join(item.skill_id for item in blocked))
-        return mapped
+            return {"answer": answer, "passed": bool(answer), "violations": [] if answer else ["empty_answer"]}
 
 
-def fallback_analysis(message: str, locale: str) -> dict[str, Any]:
-    lowered = message.lower()
-    intent = "credit" if any(word in lowered for word in ("credit", "クレジット", "残高")) else "general"
-    mode = "high_pressure" if any(word in lowered for word in ("怒", "ふざけ", "困", "not working")) else "stable"
-    sub_questions = [item.strip() for item in message.replace("？", "?").split("?") if item.strip()] or [message]
-    return {"message": message.strip(), "intent": intent, "entities": {}, "sub_questions": sub_questions, "search_query": message, "ambiguity": 0, "human_state": {"mode": mode, "response_policy": ["deterministic_first"]}, "worker_results": ["python_fallback"], "locale": locale}
+def render_fallback(locale: str, hits: list[Any], analysis: dict[str, Any]) -> dict[str, str | None]:
+    if hits:
+        sections: list[str] = []
+        for hit in hits[:3]:
+            text = hit.short_answer.strip()
+            if hit.body.strip():
+                text += "\n\n" + hit.body.strip()
+            if text not in sections:
+                sections.append(text)
+        return {"answer": "\n\n".join(sections), "clarification": None}
+    topic = str(analysis.get("active_topic") or "").strip()
+    if locale == "ja-JP":
+        prefix = f"{topic}について、" if topic and topic != "general" else ""
+        text = prefix + "正確に確認するため、現在の画面・表示されている内容・直前に行った操作を教えてください。"
+    else:
+        prefix = f"For {topic}, " if topic and topic != "general" else ""
+        text = prefix + "tell me the current screen, what is displayed, and the last action you took."
+    return {"answer": text, "clarification": text}
 
 
-def fallback_plan(payload: dict[str, Any]) -> dict[str, Any]:
-    analysis = payload.get("analysis") or {}
-    renderer = payload.get("renderer") or {}
-    evidence = payload.get("evidence") or []
-    engine_required = bool(renderer.get("requires_language_engine") and evidence and (len(analysis.get("sub_questions") or []) > 1 or analysis.get("human_state", {}).get("mode") == "high_pressure"))
-    return {"engine_required": engine_required, "engine_reason": "multi_evidence_composition" if engine_required else "deterministic_sufficient", "missing_values": [], "clarification": renderer.get("clarification"), "action": None}
+ControlledExecutionCore = ConversationCore
+ControlOutcome = ConversationOutcome

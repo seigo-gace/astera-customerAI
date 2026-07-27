@@ -111,10 +111,7 @@ class V8Supervisor:
             self.settings.node_socket.unlink(missing_ok=True)
             script = Path(__file__).resolve().parent.parent / "v8" / "server.mjs"
             env = os.environ.copy()
-            env.update({
-                "CUSTOMER_AI_NODE_SOCKET": str(self.settings.node_socket),
-                "CUSTOMER_AI_V8_WORKER_POOL_SIZE": str(self.settings.v8_worker_pool_size),
-            })
+            env["CUSTOMER_AI_NODE_SOCKET"] = str(self.settings.node_socket)
             self.process = await asyncio.create_subprocess_exec(
                 self.node_binary,
                 f"--max-old-space-size={self.settings.node_memory_mb}",
@@ -147,7 +144,12 @@ class V8Supervisor:
         if not self.process or self.process.returncode is not None:
             await self.start()
         request_id = str(uuid.uuid4())
-        request = {"request_id": request_id, "phase": phase, "deadline_at": int((time.time() + timeout) * 1000), "payload": payload}
+        request = {
+            "request_id": request_id,
+            "phase": phase,
+            "deadline_at": int((time.time() + timeout) * 1000),
+            "payload": payload,
+        }
         try:
             reader, writer = await asyncio.open_unix_connection(str(self.settings.node_socket))
             writer.write((json.dumps(request, ensure_ascii=False) + "\n").encode())

@@ -27,18 +27,16 @@ class Settings:
     node_binary: str
     node_socket: Path
     node_memory_mb: int
-    v8_worker_pool_size: int
     job_lease_seconds: int
     session_lease_seconds: int
-    job_ttl_seconds: int
-    session_ttl_seconds: int
     max_input_chars: int
     process_concurrency: int
     gateway_timeout_seconds: int
-    recovery_bot_interval_seconds: int
-    insight_bot_interval_seconds: int
-    kb_sync_bot_interval_seconds: int
-    enable_kb_sync_bot: bool
+    session_cache_ttl_seconds: int
+    session_cache_max_sessions: int
+    session_cache_max_turns: int
+    kb_cache_ttl_seconds: int
+    kb_cache_max_entries: int
 
     @classmethod
     def load(cls) -> "Settings":
@@ -56,23 +54,19 @@ class Settings:
             gpu_daily_budget_seconds=_int("CUSTOMER_AI_GPU_DAILY_BUDGET_SECONDS", 2100),
             node_binary=os.getenv("CUSTOMER_AI_NODE_BINARY", "node"),
             node_socket=Path(os.getenv("CUSTOMER_AI_NODE_SOCKET", "/tmp/customer-ai-v8.sock")),
-            node_memory_mb=_int("CUSTOMER_AI_NODE_MEMORY_MB", 512),
-            v8_worker_pool_size=min(4, _int("CUSTOMER_AI_V8_WORKER_POOL_SIZE", 2)),
+            node_memory_mb=_int("CUSTOMER_AI_NODE_MEMORY_MB", 384),
             job_lease_seconds=_int("CUSTOMER_AI_JOB_LEASE_SECONDS", 90),
             session_lease_seconds=_int("CUSTOMER_AI_SESSION_LEASE_SECONDS", 90),
-            job_ttl_seconds=_int("CUSTOMER_AI_JOB_TTL_SECONDS", 604800),
-            session_ttl_seconds=_int("CUSTOMER_AI_SESSION_TTL_SECONDS", 2592000),
             max_input_chars=_int("CUSTOMER_AI_MAX_INPUT_CHARS", 20000),
             process_concurrency=_int("CUSTOMER_AI_PROCESS_CONCURRENCY", 2),
             gateway_timeout_seconds=_int("CUSTOMER_AI_GATEWAY_TIMEOUT_SECONDS", 10),
-            recovery_bot_interval_seconds=_int("CUSTOMER_AI_RECOVERY_BOT_INTERVAL_SECONDS", 60),
-            insight_bot_interval_seconds=_int("CUSTOMER_AI_INSIGHT_BOT_INTERVAL_SECONDS", 300),
-            kb_sync_bot_interval_seconds=_int("CUSTOMER_AI_KB_SYNC_BOT_INTERVAL_SECONDS", 900),
-            enable_kb_sync_bot=os.getenv("CUSTOMER_AI_ENABLE_KB_SYNC_BOT", "0") == "1",
+            session_cache_ttl_seconds=_int("CUSTOMER_AI_SESSION_CACHE_TTL_SECONDS", 1800),
+            session_cache_max_sessions=_int("CUSTOMER_AI_SESSION_CACHE_MAX_SESSIONS", 256),
+            session_cache_max_turns=_int("CUSTOMER_AI_SESSION_CACHE_MAX_TURNS", 12),
+            kb_cache_ttl_seconds=_int("CUSTOMER_AI_KB_CACHE_TTL_SECONDS", 120),
+            kb_cache_max_entries=_int("CUSTOMER_AI_KB_CACHE_MAX_ENTRIES", 256),
         )
 
     def ensure_directories(self) -> None:
-        for name in (
-            "jobs", "sessions", "kb/snapshots", "kb-candidates", "runtime", "recovery", "temporary", "bots", "evidence"
-        ):
+        for name in ("jobs", "sessions", "kb/snapshots", "runtime", "temporary"):
             (self.data_root / name).mkdir(parents=True, exist_ok=True)
