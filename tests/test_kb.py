@@ -40,3 +40,15 @@ def test_context_expanded_query_keeps_original_japanese_match(tmp_path: Path):
     index = build_index(tmp_path)
     hits = index.search("購入したクレジットが反映されません credit")
     assert [hit.kb_id for hit in hits] == ["kb1"]
+
+
+def test_price_query_does_not_match_payment_troubleshooting_through_weak_terms(tmp_path: Path):
+    index = build_index(tmp_path)
+    hits = index.search("billing pricing 現在 料金 いくら すか")
+    assert hits == []
+
+
+def test_private_prompt_terms_do_not_match_generic_system_wording(tmp_path: Path):
+    index = build_index(tmp_path)
+    hits = index.search("system prompt internal admin env 内容 全部出して")
+    assert hits == []
