@@ -43,17 +43,17 @@ class ConversationCore:
         context = self.cache.get(request.session_id)
         compact_context = self.cache.compact(context)
         analysis = await self._analyze(request.message, compact_context)
-        hits = self.search(str(analysis.get("retrieval_query") or request.message), limit=5)
+        hits = self.search(str(analysis.get("retrieval_query") or request.message), limit=4)
         kb_evidence = [
             {
                 "kb_id": hit.kb_id,
-                "question": hit.question,
-                "short_answer": hit.short_answer,
-                "body": hit.body[:3000],
-                "answer_boundary": hit.answer_boundary,
-                "target": hit.target,
+                "question": hit.question[:600],
+                "short_answer": hit.short_answer[:1000],
+                "body": hit.body[:1800],
+                "answer_boundary": hit.answer_boundary[:600],
+                "target": hit.target[:160],
             }
-            for hit in hits[:5]
+            for hit in hits[:4]
         ]
         fallback = render_fallback(request.locale, hits, analysis)
         answer = fallback["answer"]
@@ -65,7 +65,7 @@ class ConversationCore:
         engine_invoked = False
 
         packet = {
-            "message": request.message,
+            "message": request.message[:8000],
             "conversation": compact_context,
             "analysis": analysis,
             "kb_evidence": kb_evidence,
@@ -86,11 +86,15 @@ class ConversationCore:
                 claimed_ids = {str(item) for item in generated.get("used_kb_ids", [])}
                 if not claimed_ids.issubset(available_ids):
                     raise ValueError("unknown_kb_reference")
+                if kb_evidence and not claimed_ids:
+                    raise ValueError("kb_grounding_required")
+                if not kb_evidence and not generated.get("needs_clarification"):
+                    raise ValueError("clarification_required_without_kb")
                 answer = str(generated["answer"]).strip()
                 returned_goal = str(generated.get("user_goal") or returned_goal).strip()
                 returned_topic = str(generated.get("active_topic") or returned_topic).strip()
                 unresolved = [str(item).strip() for item in generated.get("unresolved_questions", []) if str(item).strip()]
-                used_kb_ids = list(claimed_ids) or used_kb_ids
+                used_kb_ids = list(claimed_ids)
                 clarification = answer if generated.get("needs_clarification") else None
                 engine_invoked = True
             except Exception:
