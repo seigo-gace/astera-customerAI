@@ -41,12 +41,15 @@ def _generate_gpu(model_id: str, revision: str, packet: str, max_new_tokens: int
                 device_map="auto",
             )
         instruction = (
-            "You are the language component of a customer-support system. "
-            "Continue the same conversation instead of treating the current message as a new standalone question. "
-            "Use the cached user goal, active topic, confirmed details, unresolved questions, recent turns, and verified KB evidence. "
-            "Answer the current turn while staying consistent with the user's original goal. "
-            "Do not invent facts or claim an action was completed. Ask only for genuinely missing information. "
-            "Return JSON only with keys: answer, user_goal, active_topic, unresolved_questions, used_kb_ids, needs_clarification."
+            "You are only the response-composition engine inside a customer-support system. "
+            "The system has already analyzed the conversation, split all questions, retrieved verified KB evidence, "
+            "checked live operational facts when available, and built a support blueprint. "
+            "Answer every blueprint question that has evidence. For every unresolved question, name the exact missing information or pending operational check. "
+            "Preserve the cached user goal and active topic. Do not repeat information the user already supplied. "
+            "Use only evidence IDs supplied in the packet. Never invent product facts, prices, status, causes, policies, actions, or implementation details. "
+            "Do not identify the model or provider. Return strict JSON only with keys: "
+            "answer, user_goal, active_topic, answered_question_ids, unresolved_questions, requested_information, "
+            "used_evidence_ids, needs_clarification, answer_summary."
         )
         messages = [{"role": "user", "content": instruction + "\n" + packet}]
         text = _TOKENIZER.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -84,8 +87,17 @@ class GPUUsageLedger:
             handle.write(json.dumps({"timestamp": time.time(), "seconds": seconds}) + "\n")
 
 
-class ConversationLanguageEngine:
-    REQUIRED_PACKET_KEYS = {"message", "conversation", "analysis", "kb_evidence", "response_rules"}
+class SupportLanguageEngine:
+    REQUIRED_PACKET_KEYS = {
+        "mode",
+        "message",
+        "conversation",
+        "analysis",
+        "blueprint",
+        "evidence",
+        "deterministic_draft",
+        "response_contract",
+    }
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -97,25 +109,42 @@ class ConversationLanguageEngine:
     def execute(self, packet: dict[str, Any]) -> dict[str, Any]:
         missing = sorted(self.REQUIRED_PACKET_KEYS.difference(packet))
         if missing:
-            raise ValueError("conversation_packet_missing:" + ",".join(missing))
+            raise ValueError("support_packet_missing:" + ",".join(missing))
+        mode = str(packet.get("mode"))
+        if mode not in {"compose", "repair"}:
+            raise ValueError("unsupported_engine_mode")
+        if mode == "repair":
+            for key in ("previous_response", "violations", "repair_instructions"):
+                if key not in packet:
+                    raise ValueError(f"repair_packet_missing:{key}")
+        evidence = packet.get("evidence") or []
+        blueprint_ids = set(packet["blueprint"].get("available_evidence_ids") or [])
+        packet_ids = {str(item.get("evidence_id")) for item in evidence if item.get("evidence_id")}
+        if packet_ids != blueprint_ids:
+            raise ValueError("evidence_blueprint_mismatch")
         if not self.available():
             raise RuntimeError("model_unavailable_or_budget_exhausted")
+
         serialized = json.dumps(packet, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
         started = time.monotonic()
-        raw = _generate_gpu(self.settings.model_id, self.settings.model_revision, serialized, 640)
+        raw = _generate_gpu(self.settings.model_id, self.settings.model_revision, serialized, 768)
         self.ledger.record(time.monotonic() - started)
         parsed = self._parse_json(raw)
+        self._validate(parsed)
+        return parsed
+
+    @staticmethod
+    def _validate(parsed: dict[str, Any]) -> None:
         if not isinstance(parsed.get("answer"), str) or not parsed["answer"].strip():
             raise ValueError("model_schema_invalid:answer")
-        for key in ("user_goal", "active_topic"):
+        for key in ("user_goal", "active_topic", "answer_summary"):
             if not isinstance(parsed.get(key), str):
                 raise ValueError(f"model_schema_invalid:{key}")
-        for key in ("unresolved_questions", "used_kb_ids"):
+        for key in ("answered_question_ids", "unresolved_questions", "requested_information", "used_evidence_ids"):
             if not isinstance(parsed.get(key), list):
                 raise ValueError(f"model_schema_invalid:{key}")
         if not isinstance(parsed.get("needs_clarification"), bool):
             raise ValueError("model_schema_invalid:needs_clarification")
-        return parsed
 
     @staticmethod
     def _parse_json(raw: str) -> dict[str, Any]:
@@ -130,5 +159,6 @@ class ConversationLanguageEngine:
         return parsed
 
 
-ControlledLanguageEngine = ConversationLanguageEngine
-DialogueModel = ConversationLanguageEngine
+ConversationLanguageEngine = SupportLanguageEngine
+ControlledLanguageEngine = SupportLanguageEngine
+DialogueModel = SupportLanguageEngine
