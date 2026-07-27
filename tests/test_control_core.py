@@ -217,7 +217,7 @@ async def test_exact_kb_answer_uses_deterministic_path_without_model(tmp_path: P
 
     assert result.status == "completed"
     assert result.engine_invoked is False
-    assert result.processing_grade == "L1_STRUCTURED_COMPOSE"
+    assert result.processing_grade == "L0_DETERMINISTIC_EXACT"
     assert "購入時刻" in result.answer
 
 
