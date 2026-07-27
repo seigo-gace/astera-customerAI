@@ -2,12 +2,6 @@ name: verify-hf-runtime
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - ".github/workflows/verify-hf-runtime.yml"
-  pull_request:
-    paths:
-      - ".github/workflows/verify-hf-runtime.yml"
 
 permissions:
   contents: read
