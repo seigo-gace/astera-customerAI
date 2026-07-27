@@ -26,15 +26,36 @@ jobs:
       - name: Conversation and control runtime tests
         if: always()
         run: pytest -q tests/test_control_core.py
-      - name: Support preparation and feedback tests
+      - name: Support blueprint preparation test
         if: always()
-        run: pytest -q tests/test_support_runtime.py
+        run: pytest -q tests/test_support_runtime.py::test_support_runtime_prepares_analysis_search_evidence_and_blueprint
+      - name: Support missing-evidence test
+        if: always()
+        run: pytest -q tests/test_support_runtime.py::test_missing_evidence_creates_specific_unresolved_section
+      - name: Support task-coverage validation test
+        if: always()
+        run: pytest -q tests/test_support_runtime.py::test_validation_requires_every_task_to_be_answered_or_unresolved
+      - name: Support feedback privacy and dedupe test
+        if: always()
+        run: pytest -q tests/test_support_runtime.py::test_feedback_store_anonymizes_and_deduplicates
       - name: API and service integration tests
         if: always()
         run: pytest -q tests/test_api.py tests/test_service.py
       - name: KB security and storage tests
         if: always()
         run: pytest -q tests/test_kb.py tests/test_security.py tests/test_storage.py
-      - name: V8 runtime tests
+      - name: V8 follow-up analysis test
         if: always()
-        run: npm test
+        run: node --test --test-name-pattern="follow-up analysis" v8/test/server.test.mjs
+      - name: V8 document decomposition test
+        if: always()
+        run: node --test --test-name-pattern="document analysis" v8/test/server.test.mjs
+      - name: V8 new-topic test
+        if: always()
+        run: node --test --test-name-pattern="new explicit topic" v8/test/server.test.mjs
+      - name: V8 coverage validation test
+        if: always()
+        run: node --test --test-name-pattern="missing coverage" v8/test/server.test.mjs
+      - name: V8 security validation test
+        if: always()
+        run: node --test --test-name-pattern="topic drift" v8/test/server.test.mjs
