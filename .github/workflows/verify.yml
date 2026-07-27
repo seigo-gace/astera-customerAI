@@ -40,6 +40,10 @@ jobs:
         if: always()
         run: pytest -q tests/test_kb.py tests/test_security.py tests/test_storage.py --junitxml=test-results/kb-security-storage.xml
 
+      - name: Diagnose evidence routing for protected story cases
+        if: always()
+        run: python scripts/diagnose_story_cases.py
+
       - name: Story tests repeated three times
         if: always()
         run: |
