@@ -21,14 +21,19 @@ jobs:
       - name: Review architecture and syntax
         run: python scripts/review.py --all
       - name: Ruff fatal checks
+        if: always()
         run: ruff check . --select E9,F63,F7,F82
       - name: Conversation and control runtime tests
+        if: always()
         run: pytest -q tests/test_control_core.py
       - name: Support preparation and feedback tests
+        if: always()
         run: pytest -q tests/test_support_runtime.py
       - name: API and service integration tests
+        if: always()
         run: pytest -q tests/test_api.py tests/test_service.py
       - name: KB security and storage tests
+        if: always()
         run: pytest -q tests/test_kb.py tests/test_security.py tests/test_storage.py
       - name: V8 runtime tests
         if: always()
