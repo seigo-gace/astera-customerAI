@@ -1,0 +1,29 @@
+name: GH Ready Check
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/gh-ready.yml"
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  gh-ready:
+    runs-on: ubuntu-latest
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+
+    steps:
+      - name: Check GitHub CLI
+        run: |
+          gh --version
+          gh auth status
+          gh repo view "$GH_REPO"
+          echo "GH_READY"
