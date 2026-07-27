@@ -7,6 +7,7 @@ from typing import Any, Callable
 from .conversation import ConversationCache
 from .schemas import SessionContext
 from .security import contains_internal_implementation, redact_text
+from .support import FeedbackStore, PreparedSupport, SupportRuntime, validate_response
 from .v8 import V8Unavailable
 
 
@@ -21,10 +22,16 @@ class ConversationOutcome:
     context_used: bool
     analysis: dict[str, Any]
     violations: list[str]
+    processing_grade: str
+    question_tasks: list[dict[str, Any]]
+    blueprint: dict[str, Any]
+    repair_attempted: bool
+    feedback_candidate_id: str | None
+    execution: dict[str, Any]
 
 
 class ConversationCore:
-    """Keeps one user's goal and conversation coherent across follow-up turns."""
+    """Astera-derived support pipeline specialized for Customer AI response handling."""
 
     def __init__(
         self,
@@ -33,132 +40,227 @@ class ConversationCore:
         engine: Any,
         cache: ConversationCache,
         search: Callable[..., list[Any]],
+        feedback_store: FeedbackStore | None = None,
     ) -> None:
         self.v8 = v8
         self.engine = engine
         self.cache = cache
         self.search = search
+        self.support = SupportRuntime(search=search)
+        self.feedback_store = feedback_store
 
     async def execute(self, *, request: Any) -> ConversationOutcome:
         context = self.cache.get(request.session_id)
         compact_context = self.cache.compact(context)
-        analysis = await self._analyze(request.message, compact_context)
-        hits = self.search(str(analysis.get("retrieval_query") or request.message), limit=4)
-        kb_evidence = [
-            {
-                "kb_id": hit.kb_id,
-                "question": hit.question[:600],
-                "short_answer": hit.short_answer[:1000],
-                "body": hit.body[:1800],
-                "answer_boundary": hit.answer_boundary[:600],
-                "target": hit.target[:160],
-            }
-            for hit in hits[:4]
-        ]
-        fallback = render_fallback(request.locale, hits, analysis)
-        answer = fallback["answer"]
-        clarification = fallback["clarification"]
-        unresolved = list(context.unresolved_questions)
-        used_kb_ids = [hit.kb_id for hit in hits]
-        returned_goal = str(analysis.get("user_goal") or context.user_goal or request.message)
-        returned_topic = str(analysis.get("active_topic") or context.active_topic or "general")
+        analysis = await self._analyze(request.message, compact_context, request.source)
+        prepared = await self.support.prepare(
+            message=request.message,
+            locale=request.locale,
+            source=request.source,
+            context=compact_context,
+            analysis=analysis,
+        )
+
+        answer, answered_task_ids, unresolved_task_ids, used_evidence_ids = self._deterministic_state(prepared)
+        returned_goal = str(analysis.get("user_goal") or context.user_goal or request.message).strip()
+        returned_topic = str(analysis.get("active_topic") or context.active_topic or "general").strip()
         engine_invoked = False
+        repair_attempted = False
+        first_attempt_violations: list[str] = []
 
-        packet = {
-            "message": request.message[:8000],
-            "conversation": compact_context,
-            "analysis": analysis,
-            "kb_evidence": kb_evidence,
-            "response_rules": {
-                "continue_same_user_goal": True,
-                "answer_current_follow_up": True,
-                "do_not_repeat_answered_questions": True,
-                "ask_only_for_missing_information": True,
-                "do_not_invent_product_facts": True,
-                "do_not_claim_unexecuted_actions": True,
-                "locale": request.locale,
-            },
-        }
-        if self.engine.available():
-            try:
-                generated = await asyncio.to_thread(self.engine.execute, packet)
-                available_ids = {item["kb_id"] for item in kb_evidence}
-                claimed_ids = {str(item) for item in generated.get("used_kb_ids", [])}
-                if not claimed_ids.issubset(available_ids):
-                    raise ValueError("unknown_kb_reference")
-                if kb_evidence and not claimed_ids:
-                    raise ValueError("kb_grounding_required")
-                if not kb_evidence and not generated.get("needs_clarification"):
-                    raise ValueError("clarification_required_without_kb")
-                answer = str(generated["answer"]).strip()
-                returned_goal = str(generated.get("user_goal") or returned_goal).strip()
-                returned_topic = str(generated.get("active_topic") or returned_topic).strip()
-                unresolved = [str(item).strip() for item in generated.get("unresolved_questions", []) if str(item).strip()]
-                used_kb_ids = list(claimed_ids)
-                clarification = answer if generated.get("needs_clarification") else None
+        packet = self._engine_packet(
+            request=request,
+            compact_context=compact_context,
+            prepared=prepared,
+            analysis=analysis,
+        )
+        if prepared.model_required and prepared.evidence and self.engine.available():
+            generated = await self._execute_engine(packet)
+            if generated is not None:
+                answer, returned_goal, returned_topic, answered_task_ids, unresolved_task_ids, used_evidence_ids = self._apply_engine_output(
+                    generated=generated,
+                    fallback_answer=answer,
+                    returned_goal=returned_goal,
+                    returned_topic=returned_topic,
+                    default_answered=answered_task_ids,
+                    default_unresolved=unresolved_task_ids,
+                    default_evidence=used_evidence_ids,
+                )
                 engine_invoked = True
-            except Exception:
-                answer = fallback["answer"]
-                clarification = fallback["clarification"]
 
-        verification = await self._verify(
+        verification = await self._verify_response(
             answer=answer,
             analysis=analysis,
+            prepared=prepared,
             returned_topic=returned_topic,
-            used_kb_ids=used_kb_ids,
-            available_kb_ids=[item["kb_id"] for item in kb_evidence],
+            answered_task_ids=answered_task_ids,
+            unresolved_task_ids=unresolved_task_ids,
+            used_evidence_ids=used_evidence_ids,
         )
-        violations = list(verification.get("violations") or [])
-        if not verification.get("passed", False):
-            answer = fallback["answer"]
-            clarification = fallback["clarification"]
+        validation = validate_response(
+            answer=answer,
+            prepared=prepared,
+            answered_task_ids=answered_task_ids,
+            unresolved_task_ids=unresolved_task_ids,
+            used_evidence_ids=used_evidence_ids,
+            external_violations=verification.get("violations") or [],
+        )
+
+        if not validation.passed and engine_invoked:
+            first_attempt_violations = list(validation.violations)
+            repair_attempted = True
+            repair_packet = {
+                **packet,
+                "repair": {
+                    "attempt": 1,
+                    "previous_answer": answer[:12000],
+                    "violations": validation.violations,
+                    "required_answered_task_ids": [item.task_id for item in prepared.tasks if item.task_id not in prepared.blueprint.get("unresolved_task_ids", [])],
+                    "required_unresolved_task_ids": list(prepared.blueprint.get("unresolved_task_ids", [])),
+                    "allowed_evidence_ids": [item.evidence_id for item in prepared.evidence],
+                },
+            }
+            repaired = await self._execute_engine(repair_packet)
+            if repaired is not None:
+                answer, returned_goal, returned_topic, answered_task_ids, unresolved_task_ids, used_evidence_ids = self._apply_engine_output(
+                    generated=repaired,
+                    fallback_answer=prepared.blueprint["deterministic_answer"],
+                    returned_goal=returned_goal,
+                    returned_topic=returned_topic,
+                    default_answered=[section["task_id"] for section in prepared.blueprint["sections"] if section["resolved"]],
+                    default_unresolved=list(prepared.blueprint.get("unresolved_task_ids", [])),
+                    default_evidence=list(prepared.blueprint.get("evidence_ids", [])),
+                )
+            verification = await self._verify_response(
+                answer=answer,
+                analysis=analysis,
+                prepared=prepared,
+                returned_topic=returned_topic,
+                answered_task_ids=answered_task_ids,
+                unresolved_task_ids=unresolved_task_ids,
+                used_evidence_ids=used_evidence_ids,
+            )
+            validation = validate_response(
+                answer=answer,
+                prepared=prepared,
+                answered_task_ids=answered_task_ids,
+                unresolved_task_ids=unresolved_task_ids,
+                used_evidence_ids=used_evidence_ids,
+                external_violations=verification.get("violations") or [],
+            )
+
+        if not validation.passed:
+            answer, answered_task_ids, unresolved_task_ids, used_evidence_ids = self._deterministic_state(prepared)
+            verification = await self._verify_response(
+                answer=answer,
+                analysis=analysis,
+                prepared=prepared,
+                returned_topic=str(analysis.get("active_topic") or returned_topic),
+                answered_task_ids=answered_task_ids,
+                unresolved_task_ids=unresolved_task_ids,
+                used_evidence_ids=used_evidence_ids,
+            )
+            validation = validate_response(
+                answer=answer,
+                prepared=prepared,
+                answered_task_ids=answered_task_ids,
+                unresolved_task_ids=unresolved_task_ids,
+                used_evidence_ids=used_evidence_ids,
+                external_violations=verification.get("violations") or [],
+            )
             returned_topic = str(analysis.get("active_topic") or returned_topic)
-            used_kb_ids = [hit.kb_id for hit in hits]
             engine_invoked = False
 
         answer = redact_text(answer).text.strip()
         if contains_internal_implementation(answer):
-            violations.append("internal_implementation")
             answer = (
-                "内部構成の詳細ではなく、利用方法と問題解決に必要な範囲で案内します。"
+                "内部実装の非公開部分ではなく、利用方法、仕様、問題解決に必要な範囲で具体的に説明します。"
                 if request.locale == "ja-JP"
-                else "I can explain supported use and resolution steps without private implementation details."
+                else "I can explain supported use, specifications, and resolution steps without exposing private implementation details."
             )
-            clarification = answer
+            validation.violations.append("internal_implementation")
+            unresolved_task_ids = list(dict.fromkeys([*unresolved_task_ids, *[item.task_id for item in prepared.tasks]]))
+            answered_task_ids = []
 
-        status = "awaiting_clarification" if clarification else "completed"
+        clarification = self._clarification(prepared, unresolved_task_ids)
+        status = "awaiting_clarification" if unresolved_task_ids else "completed"
+        question_ledger = self._updated_ledger(context, request.message_id, prepared, answered_task_ids, unresolved_task_ids)
+        evidence_cache = self._updated_evidence_cache(context, prepared)
+        answered_ledger_ids = [
+            f"{request.message_id}:{task_id}" for task_id in answered_task_ids
+        ]
         updated = SessionContext(
             session_id=request.session_id,
             user_goal=returned_goal[:1000],
             active_topic=returned_topic[:160],
             confirmed_details=dict(analysis.get("confirmed_details") or context.confirmed_details),
-            unresolved_questions=unresolved,
-            last_kb_ids=used_kb_ids,
+            unresolved_questions=[
+                item.text for item in prepared.tasks if item.task_id in unresolved_task_ids
+            ],
+            last_kb_ids=[item.kb_id for item in prepared.evidence],
             turns=context.turns,
+            answered_question_ids=list(dict.fromkeys([*context.answered_question_ids, *answered_ledger_ids])),
+            question_ledger=question_ledger,
+            evidence_cache=evidence_cache,
+            last_blueprint=prepared.blueprint,
         )
         updated = self.cache.append_turns(
             updated,
             user_text=request.message,
             assistant_text=answer,
             message_id=request.message_id,
-            kb_ids=used_kb_ids,
+            kb_ids=[item.kb_id for item in prepared.evidence],
         )
         self.cache.save(updated)
+
+        candidate_id = None
+        if self.feedback_store is not None:
+            candidate_id = self.feedback_store.record(
+                session_id=request.session_id,
+                message=request.message,
+                prepared=prepared,
+                validation=validation,
+                status=status,
+            )
+
+        final_violations = list(dict.fromkeys(validation.violations))
+        execution = {
+            "pipeline": "astera-derived-document-task-search-evidence-blueprint",
+            "processing_grade": prepared.processing_grade,
+            "question_count": len(prepared.tasks),
+            "search_task_count": len(prepared.search_tasks),
+            "evidence_count": len(prepared.evidence),
+            "engine_required": prepared.model_required,
+            "engine_invoked": engine_invoked,
+            "repair_attempted": repair_attempted,
+            "repair_limit": 1,
+            "first_attempt_violations": first_attempt_violations,
+            "answered_task_ids": answered_task_ids,
+            "unresolved_task_ids": unresolved_task_ids,
+            "used_evidence_ids": used_evidence_ids,
+            "feedback_candidate_id": candidate_id,
+        }
         return ConversationOutcome(
             status=status,
             answer=answer,
-            kb_ids=used_kb_ids,
-            facts=[hit.short_answer for hit in hits],
+            kb_ids=[item.kb_id for item in prepared.evidence],
+            facts=[item.short_answer for item in prepared.evidence],
             engine_invoked=engine_invoked,
             clarification=clarification,
             context_used=bool(analysis.get("context_used")),
-            analysis=analysis,
-            violations=list(dict.fromkeys(violations)),
+            analysis=analysis | {"analysis_dictionary": prepared.analysis_dictionary},
+            violations=final_violations,
+            processing_grade=prepared.processing_grade,
+            question_tasks=[item.as_dict() for item in prepared.tasks],
+            blueprint=prepared.blueprint,
+            repair_attempted=repair_attempted,
+            feedback_candidate_id=candidate_id,
+            execution=execution,
         )
 
-    async def _analyze(self, message: str, context: dict[str, Any]) -> dict[str, Any]:
+    async def _analyze(self, message: str, context: dict[str, Any], source: str) -> dict[str, Any]:
         try:
-            return await self.v8.request("analyze_turn", {"message": message, "context": context})
+            return await self.v8.request("analyze_turn", {"message": message, "context": context, "source": source})
         except V8Unavailable:
             active_topic = str(context.get("active_topic") or "general")
             goal = str(context.get("user_goal") or message)
@@ -173,32 +275,137 @@ class ConversationCore:
                 "retrieval_query": query,
             }
 
-    async def _verify(self, **payload: Any) -> dict[str, Any]:
+    async def _execute_engine(self, packet: dict[str, Any]) -> dict[str, Any] | None:
+        try:
+            return await asyncio.to_thread(self.engine.execute, packet)
+        except Exception:
+            return None
+
+    async def _verify_response(
+        self,
+        *,
+        answer: str,
+        analysis: dict[str, Any],
+        prepared: PreparedSupport,
+        returned_topic: str,
+        answered_task_ids: list[str],
+        unresolved_task_ids: list[str],
+        used_evidence_ids: list[str],
+    ) -> dict[str, Any]:
+        payload = {
+            "answer": answer,
+            "analysis": analysis,
+            "returned_topic": returned_topic,
+            "question_task_ids": [item.task_id for item in prepared.tasks],
+            "answered_task_ids": answered_task_ids,
+            "unresolved_task_ids": unresolved_task_ids,
+            "used_evidence_ids": used_evidence_ids,
+            "available_evidence_ids": [item.evidence_id for item in prepared.evidence],
+        }
         try:
             return await self.v8.request("verify_turn", payload)
         except V8Unavailable:
-            answer = str(payload.get("answer") or "").strip()
-            return {"answer": answer, "passed": bool(answer), "violations": [] if answer else ["empty_answer"]}
+            return {"answer": answer, "passed": bool(answer.strip()), "violations": [] if answer.strip() else ["empty_answer"]}
 
+    @staticmethod
+    def _engine_packet(
+        *,
+        request: Any,
+        compact_context: dict[str, Any],
+        prepared: PreparedSupport,
+        analysis: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "message": prepared.normalized_message[:8000],
+            "conversation": compact_context,
+            "support_packet": prepared.as_packet(),
+            "analysis": analysis,
+            "response_rules": {
+                "answer_only_from_supplied_evidence": True,
+                "answer_each_question_task": True,
+                "preserve_user_goal_and_topic": True,
+                "do_not_repeat_answered_questions": True,
+                "ask_only_for_specific_missing_information": True,
+                "do_not_claim_unexecuted_actions": True,
+                "do_not_expose_private_implementation": True,
+                "locale": request.locale,
+            },
+        }
 
-def render_fallback(locale: str, hits: list[Any], analysis: dict[str, Any]) -> dict[str, str | None]:
-    if hits:
-        sections: list[str] = []
-        for hit in hits[:3]:
-            text = hit.short_answer.strip()
-            if hit.body.strip():
-                text += "\n\n" + hit.body.strip()
-            if text not in sections:
-                sections.append(text)
-        return {"answer": "\n\n".join(sections), "clarification": None}
-    topic = str(analysis.get("active_topic") or "").strip()
-    if locale == "ja-JP":
-        prefix = f"{topic}について、" if topic and topic != "general" else ""
-        text = prefix + "正確に確認するため、現在の画面・表示されている内容・直前に行った操作を教えてください。"
-    else:
-        prefix = f"For {topic}, " if topic and topic != "general" else ""
-        text = prefix + "tell me the current screen, what is displayed, and the last action you took."
-    return {"answer": text, "clarification": text}
+    @staticmethod
+    def _apply_engine_output(
+        *,
+        generated: dict[str, Any],
+        fallback_answer: str,
+        returned_goal: str,
+        returned_topic: str,
+        default_answered: list[str],
+        default_unresolved: list[str],
+        default_evidence: list[str],
+    ) -> tuple[str, str, str, list[str], list[str], list[str]]:
+        answer = str(generated.get("answer") or fallback_answer).strip()
+        goal = str(generated.get("user_goal") or returned_goal).strip()
+        topic = str(generated.get("active_topic") or returned_topic).strip()
+        answered = [str(item) for item in generated.get("answered_task_ids", default_answered) if str(item)]
+        unresolved = [str(item) for item in generated.get("unresolved_task_ids", default_unresolved) if str(item)]
+        evidence = [str(item) for item in generated.get("used_evidence_ids", default_evidence) if str(item)]
+        return answer, goal, topic, answered, unresolved, evidence
+
+    @staticmethod
+    def _deterministic_state(prepared: PreparedSupport) -> tuple[str, list[str], list[str], list[str]]:
+        answered = [section["task_id"] for section in prepared.blueprint["sections"] if section["resolved"]]
+        unresolved = list(prepared.blueprint.get("unresolved_task_ids", []))
+        return (
+            str(prepared.blueprint.get("deterministic_answer") or "").strip(),
+            answered,
+            unresolved,
+            list(prepared.blueprint.get("evidence_ids", [])),
+        )
+
+    @staticmethod
+    def _clarification(prepared: PreparedSupport, unresolved_task_ids: list[str]) -> str | None:
+        if not unresolved_task_ids:
+            return None
+        sections = [
+            section["body"]
+            for section in prepared.blueprint.get("sections", [])
+            if section.get("task_id") in unresolved_task_ids and section.get("body")
+        ]
+        return "\n\n".join(dict.fromkeys(sections)) or None
+
+    @staticmethod
+    def _updated_ledger(
+        context: SessionContext,
+        message_id: str,
+        prepared: PreparedSupport,
+        answered_task_ids: list[str],
+        unresolved_task_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        new_rows = []
+        for task in prepared.tasks:
+            new_rows.append(
+                {
+                    "ledger_id": f"{message_id}:{task.task_id}",
+                    "message_id": message_id,
+                    "task": task.as_dict(),
+                    "status": "answered" if task.task_id in answered_task_ids else "unresolved" if task.task_id in unresolved_task_ids else "pending",
+                    "evidence_ids": [item.evidence_id for item in prepared.evidence if task.task_id in item.task_ids],
+                }
+            )
+        return [*context.question_ledger, *new_rows][-24:]
+
+    @staticmethod
+    def _updated_evidence_cache(context: SessionContext, prepared: PreparedSupport) -> dict[str, dict[str, Any]]:
+        cache = dict(context.evidence_cache)
+        for item in prepared.evidence:
+            cache[item.evidence_id] = {
+                "kb_id": item.kb_id,
+                "question": item.question[:600],
+                "short_answer": item.short_answer[:1200],
+                "answer_boundary": item.answer_boundary[:600],
+                "task_ids": item.task_ids,
+            }
+        return dict(list(cache.items())[-16:])
 
 
 ControlledExecutionCore = ConversationCore
