@@ -1,0 +1,25 @@
+# Project State
+
+- Project: Astera Customer AI
+- Branch: `agent/customer-ai-astera-runtime`
+- Phase: Astera-derived response runtime reconstruction
+- Status: implementation and repository tests added; GitHub Actions verification pending
+- Completed scope:
+  - Japanese normalization and document/question decomposition
+  - per-task search planning and bounded parallel KB retrieval
+  - task/evidence binding and support blueprint
+  - deterministic processing grades
+  - optional prepared-packet model composition
+  - one-repair maximum
+  - question/evidence coverage verification
+  - persistent question ledger, evidence cache, and blueprint
+  - anonymized deduplicated review-only KB feedback candidates
+  - implementation plan for private HF, existing Webhook Gateway, and Cloudflare publication
+- Not completed or not claimed:
+  - GitHub Actions pass
+  - merge to main
+  - HF deployment
+  - production secrets
+  - Gateway production destination/callback
+  - Cloudflare HP/app integration
+- Next required action: inspect GitHub Actions, fix every failing verification, then complete Gateway and Cloudflare integration without deploying HF prematurely.
