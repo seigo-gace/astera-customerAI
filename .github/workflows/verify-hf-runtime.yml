@@ -1,0 +1,104 @@
+name: verify-hf-runtime
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-hf-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_SPACE_ID: G-ACE/astera-customerAI
+      HF_BUCKET_ID: G-ACE/astera-customerai-data
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install HF verification client
+        run: python -m pip install --quiet 'huggingface_hub>=1.24.0' 'httpx>=0.28,<1'
+      - name: Verify private Space and Bucket
+        env:
+          VERIFY_RUN_ID: ${{ github.run_id }}
+          VERIFY_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import tempfile
+          from pathlib import Path
+
+          import httpx
+          from huggingface_hub import HfApi
+
+          token = os.environ.get("HF_TOKEN", "")
+          space_id = os.environ["HF_SPACE_ID"]
+          bucket_id = os.environ["HF_BUCKET_ID"]
+          run_id = os.environ["VERIFY_RUN_ID"]
+          sha = os.environ["VERIFY_SHA"]
+          if not token:
+              raise SystemExit("HF_TOKEN_MISSING")
+
+          api = HfApi(token=token)
+          identity = api.whoami()
+          print("HF_AUTHENTICATED_AS=" + str(identity.get("name") or identity.get("fullname") or "unknown"))
+
+          bucket = api.bucket_info(bucket_id)
+          if not bucket.private:
+              raise RuntimeError("HF_BUCKET_NOT_PRIVATE")
+          print(json.dumps({
+              "bucket_id": bucket.id,
+              "private": bucket.private,
+              "size": bucket.size,
+              "total_files": bucket.total_files,
+          }, sort_keys=True))
+
+          space = api.space_info(space_id, expand=["runtime", "private", "sha", "sdk", "subdomain"])
+          if not space.private:
+              raise RuntimeError("HF_SPACE_NOT_PRIVATE")
+          print(json.dumps({
+              "space_id": space.id,
+              "private": space.private,
+              "sdk": space.sdk,
+              "sha": space.sha,
+              "subdomain": space.subdomain,
+              "runtime": str(space.runtime),
+          }, sort_keys=True))
+
+          probe_path = f"runtime-verification/github-{run_id}.json"
+          payload = json.dumps({"run_id": run_id, "github_sha": sha}, sort_keys=True).encode("utf-8")
+          with tempfile.TemporaryDirectory(prefix="hf-bucket-verify-") as temporary:
+              downloaded = Path(temporary) / "probe.json"
+              try:
+                  api.batch_bucket_files(bucket_id, add=[(payload, probe_path)])
+                  api.download_bucket_files(bucket_id, files=[(probe_path, str(downloaded))])
+                  if downloaded.read_bytes() != payload:
+                      raise RuntimeError("HF_BUCKET_READ_AFTER_WRITE_MISMATCH")
+                  print("HF_BUCKET_WRITE_READ_OK")
+              finally:
+                  api.batch_bucket_files(bucket_id, delete=[probe_path])
+                  print("HF_BUCKET_PROBE_REMOVED")
+
+          if not space.subdomain:
+              raise RuntimeError("HF_SPACE_SUBDOMAIN_MISSING")
+          health_url = f"https://{space.subdomain}.hf.space/healthz"
+          response = httpx.get(
+              health_url,
+              headers={"Authorization": f"Bearer {token}"},
+              timeout=120,
+              follow_redirects=True,
+          )
+          print(f"HF_SPACE_HEALTH_STATUS={response.status_code}")
+          if response.status_code != 200:
+              raise RuntimeError(f"HF_SPACE_HEALTH_FAILED:{response.status_code}:{response.text[:500]}")
+          body = response.json()
+          if body.get("status") != "ok":
+              raise RuntimeError("HF_SPACE_HEALTH_BODY_INVALID")
+          print("HF_SPACE_HEALTH_OK")
+          print("HF_RUNTIME_BOUNDARY_READY")
+          PY

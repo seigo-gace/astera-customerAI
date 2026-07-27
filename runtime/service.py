@@ -16,8 +16,9 @@ from .kb import KBIndex
 from .model import ConversationLanguageEngine
 from .notion import NotionClient
 from .schemas import CloudEvent, JobRecord, JobResult, MessagePayload
-from .security import canonical_json, redact_text, sanitize_structure, sign_hmac, validate_identifier
+from .security import canonical_json, redact_text, sanitize_structure, sign_standard_webhook, validate_identifier
 from .storage import ConflictError, JobStore
+from .support import FeedbackStore
 from .v8 import V8Supervisor
 
 
@@ -40,10 +41,18 @@ class GatewayClient:
         }
         body = canonical_json(event)
         timestamp = str(int(time.time()))
+        event_id = str(event["id"])
         headers = {
             "content-type": "application/cloudevents+json",
-            "x-webhook-timestamp": timestamp,
-            "x-webhook-signature": sign_hmac(body, timestamp, self.settings.gateway_callback_secret),
+            "webhook-id": event_id,
+            "webhook-timestamp": timestamp,
+            "webhook-signature": sign_standard_webhook(
+                body,
+                event_id,
+                timestamp,
+                self.settings.gateway_callback_secret,
+            ),
+            "webhook-event": event_type,
         }
         async with httpx.AsyncClient(timeout=self.settings.gateway_timeout_seconds) as client:
             response = await client.post(self.settings.gateway_callback_url, content=body, headers=headers)
@@ -68,7 +77,14 @@ class CustomerAIService:
             max_sessions=self.settings.session_cache_max_sessions,
             max_turns=self.settings.session_cache_max_turns,
         )
-        self.core = ConversationCore(v8=self.v8, engine=self.engine, cache=self.conversations, search=self.kb.search)
+        self.feedback = FeedbackStore(self.settings.data_root)
+        self.core = ConversationCore(
+            v8=self.v8,
+            engine=self.engine,
+            cache=self.conversations,
+            search=self.kb.search,
+            feedback_store=self.feedback,
+        )
         self.gateway = GatewayClient(self.settings)
         self.notion = NotionClient(self.settings.notion_token, self.settings.notion_data_source_id)
         self._process_semaphore = asyncio.Semaphore(self.settings.process_concurrency)
@@ -147,7 +163,7 @@ class CustomerAIService:
                 if existing:
                     return existing
                 request = self.jobs.get_request(job_id)
-                self.jobs.update_job(job_id, status="processing", stage="conversation_context")
+                self.jobs.update_job(job_id, status="processing", stage="support_preparation")
                 session_lease_path = self.jobs.sessions_root / request.session_id / "lease.json"
                 try:
                     with self.jobs.store.lease(session_lease_path, job_id, self.settings.session_lease_seconds):
@@ -175,6 +191,12 @@ class CustomerAIService:
         ).model_dump(mode="json") | {
             "analysis": outcome.analysis,
             "violations": outcome.violations,
+            "processing_grade": outcome.processing_grade,
+            "question_tasks": outcome.question_tasks,
+            "blueprint": outcome.blueprint,
+            "repair_attempted": outcome.repair_attempted,
+            "feedback_candidate_id": outcome.feedback_candidate_id,
+            "execution": outcome.execution,
         }
 
     def readiness(self) -> dict[str, Any]:
@@ -186,6 +208,8 @@ class CustomerAIService:
             "model_revision_pinned": bool(self.settings.model_revision),
             "conversation_cache": self.conversations.status(),
             "kb_cache": self.kb.cache_status(),
+            "feedback_store": self.feedback.root.exists(),
+            "support_pipeline": "astera-derived-document-task-search-evidence-blueprint",
         }
 
 

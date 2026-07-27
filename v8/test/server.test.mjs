@@ -36,6 +36,7 @@ function request(phase, payload) {
 test("follow-up analysis reuses cached goal and topic", async () => {
   const response = await request("analyze_turn", {
     message: "昨日の夜です。どこを確認すればいい？",
+    source: "astera-app",
     context: {
       user_goal: "購入したクレジットが反映されない問題を解決する",
       active_topic: "credit",
@@ -48,13 +49,32 @@ test("follow-up analysis reuses cached goal and topic", async () => {
   assert.equal(response.result.follow_up, true);
   assert.equal(response.result.context_used, true);
   assert.equal(response.result.active_topic, "credit");
-  assert.match(response.result.retrieval_query, /クレジット/);
+  assert.match(response.result.retrieval_query, /credit/);
   assert.equal(response.result.confirmed_details.relative_time, "昨日");
+  assert.ok(response.result.question_tasks.some((item) => item.intent === "procedure"));
+  assert.equal(response.result.question_tasks.some((item) => item.text === "昨日の夜です"), false);
+});
+
+test("document analysis decomposes multiple questions into search tasks", async () => {
+  const response = await request("analyze_turn", {
+    message: "Asteraとは何ですか？Webhook Gatewayとの違いは？APIなしでも使えますか？",
+    source: "astera-hp",
+    context: { user_goal: "", active_topic: "", confirmed_details: {}, turns: [] },
+  });
+  assert.equal(response.ok, true);
+  assert.equal(response.result.question_count, 3);
+  assert.deepEqual(response.result.question_tasks.map((item) => item.task_id), ["q1", "q2", "q3"]);
+  assert.equal(response.result.question_tasks[0].intent, "definition");
+  assert.equal(response.result.question_tasks[1].intent, "comparison");
+  assert.equal(response.result.question_tasks[2].intent, "availability");
+  assert.ok(response.result.question_tasks[1].required_evidence.includes("responsibility"));
+  assert.ok(response.result.analysis_dictionary.targets.includes("astera"));
 });
 
 test("new explicit topic can replace the previous topic", async () => {
   const response = await request("analyze_turn", {
     message: "次はアカウント削除について教えて",
+    source: "astera-app",
     context: { user_goal: "クレジット未反映を解決する", active_topic: "credit", turns: [] },
   });
   assert.equal(response.ok, true);
@@ -62,13 +82,34 @@ test("new explicit topic can replace the previous topic", async () => {
   assert.equal(response.result.new_topic, true);
 });
 
-test("verification rejects topic drift and unsafe claims", async () => {
+test("verification rejects missing coverage unknown evidence and generic non-answer", async () => {
+  const response = await request("verify_turn", {
+    answer: "お問い合わせください。",
+    analysis: { follow_up: false, active_topic: "credit" },
+    returned_topic: "credit",
+    question_task_ids: ["q1", "q2"],
+    answered_task_ids: ["q1"],
+    unresolved_task_ids: [],
+    used_evidence_ids: ["kb:unknown"],
+    available_evidence_ids: ["kb:credit"],
+  });
+  assert.equal(response.ok, true);
+  assert.equal(response.result.passed, false);
+  assert.ok(response.result.violations.includes("question_coverage_missing"));
+  assert.ok(response.result.violations.includes("unknown_evidence_reference"));
+  assert.ok(response.result.violations.includes("generic_non_answer"));
+});
+
+test("verification rejects topic drift private paths and unsafe action claims", async () => {
   const response = await request("verify_turn", {
     answer: "As an AI, /internal/admin で削除しました",
     analysis: { follow_up: true, active_topic: "credit" },
     returned_topic: "account",
-    used_kb_ids: [],
-    available_kb_ids: [],
+    question_task_ids: ["q1"],
+    answered_task_ids: ["q1"],
+    unresolved_task_ids: [],
+    used_evidence_ids: [],
+    available_evidence_ids: [],
   });
   assert.equal(response.ok, true);
   assert.equal(response.result.passed, false);

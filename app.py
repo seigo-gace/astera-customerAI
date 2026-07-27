@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 
 from runtime import CustomerAIService
 from runtime.schemas import CloudEvent
-from runtime.security import verify_hmac
+from runtime.security import verify_hmac, verify_standard_webhook
 from runtime.storage import ConflictError, NotFoundError
 
 MAX_INTERNAL_BODY_BYTES = 10 * 1024 * 1024
@@ -53,10 +53,17 @@ async def accept(request: Request) -> JSONResponse:
     raw = await request.body()
     if len(raw) > service.settings.max_input_chars * 4:
         raise HTTPException(status_code=413, detail="payload_too_large")
-    timestamp = request.headers.get("x-webhook-timestamp", "")
-    signature = request.headers.get("x-webhook-signature", "")
-    if not verify_hmac(raw, timestamp, signature, service.settings.hmac_secret):
-        raise HTTPException(status_code=401, detail="invalid_signature")
+    webhook_id = request.headers.get("webhook-id", "")
+    timestamp = request.headers.get("webhook-timestamp", "")
+    signature = request.headers.get("webhook-signature", "")
+    if not verify_standard_webhook(
+        raw,
+        webhook_id,
+        timestamp,
+        signature,
+        service.settings.hmac_secret,
+    ):
+        raise HTTPException(status_code=401, detail="invalid_standard_webhook_signature")
     try:
         event = CloudEvent.model_validate_json(raw)
         record, created = await service.accept(event)

@@ -7,6 +7,7 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -16,9 +17,64 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.16.0'
-      - run: python -m pip install --upgrade pip
-      - run: pip install -r requirements-dev.txt
-      - run: python scripts/review.py --all
-      - run: ruff check . --select E9,F63,F7,F82
-      - run: pytest -q
-      - run: npm test
+      - run: python -m pip install --upgrade pip --quiet
+      - run: pip install -r requirements-dev.txt --quiet
+      - run: mkdir -p test-results
+
+      - name: Review architecture and syntax
+        run: python scripts/review.py --all
+      - name: Ruff fatal checks
+        if: always()
+        run: ruff check . --select E9,F63,F7,F82
+
+      - name: Conversation and control runtime tests
+        if: always()
+        run: pytest -q tests/test_control_core.py --junitxml=test-results/control.xml
+      - name: Support preparation feedback and validation tests
+        if: always()
+        run: pytest -q tests/test_support_runtime.py --junitxml=test-results/support.xml
+      - name: API and service integration tests
+        if: always()
+        run: pytest -q tests/test_api.py tests/test_service.py --junitxml=test-results/api-service.xml
+      - name: KB security and storage tests
+        if: always()
+        run: pytest -q tests/test_kb.py tests/test_security.py tests/test_storage.py --junitxml=test-results/kb-security-storage.xml
+
+      - name: Story tests repeated three times
+        if: always()
+        run: |
+          set -euo pipefail
+          for run in 1 2 3; do
+            echo "STORY_VALIDATION_RUN=$run"
+            pytest -q tests/test_story_runtime.py \
+              --basetemp=".pytest-story-$run" \
+              --junitxml="test-results/story-$run.xml"
+          done
+
+      - name: Signed operational runtime tests repeated twice
+        if: always()
+        run: |
+          set -euo pipefail
+          for run in 1 2; do
+            echo "OPERATIONAL_VALIDATION_RUN=$run"
+            pytest -q tests/test_operational_runtime.py \
+              --basetemp=".pytest-operational-$run" \
+              --junitxml="test-results/operational-$run.xml"
+          done
+
+      - name: V8 runtime tests
+        if: always()
+        run: npm test
+
+      - name: Full Python regression suite
+        if: always()
+        run: pytest -q --junitxml=test-results/full-regression.xml
+
+      - name: Upload verification results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: customer-ai-verification-${{ github.run_id }}
+          path: test-results
+          if-no-files-found: error
+          retention-days: 30
