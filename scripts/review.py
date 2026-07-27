@@ -9,28 +9,67 @@ ROOT = Path(__file__).resolve().parents[1]
 
 REVIEWS = {
     "conversation": {
-        "prompt": "Review whether first answers and multiple follow-up turns preserve the same user goal, active topic, confirmed details, unresolved questions, recent turns, and relevant KB context.",
-        "checks": ["ConversationCache", "user_goal", "active_topic", "unresolved_questions", "recent turns", "retrieval_query", "context_used"],
+        "prompt": "Review whether first answers and multiple follow-up turns preserve the same user goal, active topic, confirmed details, answered and unresolved questions, recent turns, evidence, and the last answer blueprint.",
+        "checks": [
+            "ConversationCache",
+            "user_goal",
+            "active_topic",
+            "unresolved_questions",
+            "answered_question_ids",
+            "question_ledger",
+            "evidence_cache",
+            "last_blueprint",
+            "context_used",
+        ],
     },
-    "lightweight": {
-        "prompt": "Review whether only directly useful mechanisms remain: bounded session cache, bounded KB query cache, one lightweight V8 turn analysis, one model response, and one consistency verification.",
-        "checks": ["session_cache_max_turns", "kb_cache_max_entries", "analyze_turn", "verify_turn", "ConversationLanguageEngine"],
+    "support_preparation": {
+        "prompt": "Review whether documents are normalized, decomposed into question tasks, converted into bounded search tasks, bound to verified KB evidence, and assembled into a support blueprint before any language-model call.",
+        "checks": [
+            "normalize_japanese",
+            "QuestionTask",
+            "SearchTask",
+            "EvidenceRetriever",
+            "analysis_dictionary",
+            "build_blueprint",
+            "processing_grade",
+            "support_packet",
+        ],
     },
-    "security": {
-        "prompt": "Review PII and secret redaction, internal implementation leakage, unknown KB references, and unverified action claims without adding unrelated orchestration layers.",
-        "checks": ["verify_hmac", "redact_text", "sanitize_structure", "internal_implementation", "unknown_kb_reference", "unverified_action_claim"],
+    "engine_boundary": {
+        "prompt": "Review whether the lightweight model is optional, receives only a prepared support packet, cannot own facts/routing/actions/completion, and is limited to one initial call plus at most one violation-targeted repair.",
+        "checks": [
+            "ConversationLanguageEngine",
+            "answer_only_from_supplied_evidence",
+            "repair_limit",
+            "repair_attempted",
+            "model_required",
+            "deterministic_answer",
+        ],
+    },
+    "security_and_feedback": {
+        "prompt": "Review PII and secret redaction, internal implementation leakage, task/evidence coverage, unverified action claims, and anonymized deduplicated KB feedback candidates that require approval and never auto-publish.",
+        "checks": [
+            "verify_hmac",
+            "redact_text",
+            "sanitize_structure",
+            "unknown_evidence_reference",
+            "question_coverage_missing",
+            "unverified_action_claim",
+            "FeedbackStore",
+            "approval_required",
+            "auto_publish",
+        ],
     },
 }
 
 FORBIDDEN_RUNTIME_PATTERNS = {
-    "kagura-engine.js": "Astera/Kagura runtime must not be invoked",
-    "CUSTOMER_AI_ASTERA_": "Astera runtime variables must not exist",
-    "class AsteraBootstrap": "Astera bootstrap must not exist",
-    "class SkillRegistry": "generic skill registry is outside the focused conversation runtime",
-    "class RoutineBotSupervisor": "routine bot supervisor is outside the focused conversation runtime",
-    "class WorkerPool": "worker pool is unnecessary for lightweight string analysis",
-    "$customer-ai.": "generated structured-skill catalog is outside the focused conversation runtime",
-    "execution_contract": "large generic execution contracts are outside the focused conversation runtime",
+    "kagura-engine.js": "Astera/Kagura engine must not be invoked",
+    "CUSTOMER_AI_ASTERA_": "Astera engine runtime variables must not exist",
+    "class AsteraBootstrap": "Astera engine bootstrap must not exist",
+    "class SkillRegistry": "a generic all-purpose skill registry is not the dedicated Customer AI runtime",
+    "class RoutineBotSupervisor": "multiple generic routine bots are outside the focused maintenance design",
+    "class WorkerPool": "an unbounded generic worker pool is unnecessary",
+    "auto_publish\": True": "user questions must never auto-publish to the approved KB",
 }
 
 
