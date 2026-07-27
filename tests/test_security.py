@@ -52,6 +52,23 @@ def test_standard_webhook_round_trip_with_base64_secret():
     )
 
 
+def test_standard_webhook_cross_repository_contract_vector():
+    body = b'{"specversion":"1.0","type":"customer.ai.message.requested"}'
+    event_id = "wh_contract_00000001"
+    timestamp = "2000000000"
+    secret = "base64:Y3VzdG9tZXItYWktY29udHJhY3Qtc2VjcmV0LTMyYiE="
+    expected = "v1,Wu5pqWl2Onp+9q3ZJPn2/5A5sB5F/SBciMD7NKe4CeI="
+    assert sign_standard_webhook(body, event_id, timestamp, secret) == expected
+    assert verify_standard_webhook(
+        body,
+        event_id,
+        timestamp,
+        expected,
+        secret,
+        tolerance_seconds=10**9,
+    )
+
+
 def test_redaction():
     result = redact_text("mail me at user@example.com token hf_12345678901234567890")
     assert "user@example.com" not in result.text
