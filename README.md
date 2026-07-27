@@ -8,54 +8,57 @@ sdk_version: 6.5.1
 app_file: app.py
 pinned: false
 license: other
-short_description: Private controlled Script/Skill/V8/Bot customer-support runtime
+short_description: Private conversation-aware customer-support runtime
 ---
 
 # Astera Customer AI
 
 Private Hugging Face Space runtime for Astera customer support.
 
-## Fixed execution principle
+## Focus
 
-The language model is not called as a standalone customer-support agent.
+The goal is not to add many orchestration parts. The goal is to let a lightweight language model answer the first question and later follow-up questions as one continuous conversation.
 
 ```text
-Input safety and normalization
-  → Controlled Execution Contract
-  → Structured `$` Skill selection
-  → V8 parallel light workers
-  → KB evidence collection
-  → Deterministic answer rendering
-  → Optional language engine inside the prepared contract
-  → V8 verification and Completion Gate
-  → Question Insight and routine bots
+Current message
+  + cached user goal
+  + active topic
+  + confirmed details
+  + unresolved questions
+  + recent turns
+  → context-aware KB search
+  → lightweight language model
+  → V8 consistency check
+  → updated conversation cache
 ```
 
-Astera itself is **not executed** in this repository. The runtime reuses engineering structures cultivated in Astera and KAGRRA—deterministic scripts, structured skills, V8 parallel processing, state capsules, evidence gates, recovery, and routine bots—without calling the Astera judgment engine.
+Astera itself is not executed. Only lightweight structures learned from prior Astera/KAGRRA work are reused where they directly improve answer continuity: input normalization, compact state, bounded cache, KB retrieval, and consistency checking.
+
+## Conversation cache
+
+Each session stores only:
+
+- user goal
+- active topic
+- confirmed details
+- unresolved questions
+- recently used KB IDs
+- the latest bounded conversation turns
+
+The cache is held in memory for fast follow-ups and persisted to the mounted private bucket so the conversation can continue after a process restart. Old turns and old sessions are bounded by configuration.
 
 ## Responsibility
 
 - Cloudflare: public UI/API edge only.
 - Existing Webhook Gateway: durable ingress, delivery, retry, replay, spool, and TGserver routing.
-- This Space: Controlled Execution Core, structured skills, Node.js V8 worker pool, SQLite FTS5 KB search, optional ZeroGPU language composition, response validation, question analysis, and routine bots.
-- Private HF Storage Bucket mounted at `/data/customer-ai`: jobs, sessions, runtime KB snapshots, bot state, and KB improvement candidates.
+- This Space: conversation cache, V8 turn analysis, cached KB search, lightweight model response, and consistency verification.
+- Private HF Storage Bucket mounted at `/data/customer-ai`: jobs, session context, and runtime KB snapshots.
 - Notion: approved Customer AI KB source of truth.
 - TGserver: long-term sanitized audit and operational logs.
 
-## Reused implementation materials
-
-The implementation adapts verified patterns from `seigo-gace/modular-catalog` without runtime dependency on that repository:
-
-- Worker lifecycle, timeout, crash recovery, one-time regeneration
-- Human-context deterministic signals
-- Deterministic routing and input normalization
-- Safe JSON and secret masking
-- Structured logging and durable outbox boundaries
-- Language-provider adapter boundary
-
 ## Required Space settings
 
-Create this repository as a **Private Gradio Space** and mount a private bucket read-write:
+Create this repository as a Private Gradio Space and mount a private bucket read-write:
 
 ```text
 hf://buckets/G-ACE/astera-customerai-data:/data/customer-ai
@@ -90,15 +93,15 @@ The Space must not be called directly by browsers. Requests arrive through the e
 
 ```bash
 python -m pip install -r requirements-dev.txt
-node --version
 pytest -q
 npm test
 python scripts/review.py --all
 ```
 
-## Fixed engine source
+## Lightweight model
 
-- Default language engine: `Qwen/Qwen3-4B-Instruct-2507`
-- The revision must be pinned before inference is enabled.
+- Default: `Qwen/Qwen3-4B-Instruct-2507`
+- The model revision must be pinned before inference is enabled.
 - Inference stays disabled by default.
-- The engine receives an Execution Contract, selected Skill results, State Capsule, and verified Evidence. It cannot own routing, tools, action execution, or completion.
+- Every model call receives the current message, compact session context, turn analysis, and the matched KB evidence.
+- The model does not receive unrelated system internals or unlimited conversation history.
