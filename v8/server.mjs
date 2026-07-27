@@ -18,10 +18,10 @@ const TOPICS = [
 const INTENTS = [
   ["comparison", /違い|比較|どちら|何が異なる|\bvs\b/i],
   ["troubleshooting", /エラー|動かない|できない|反映されない|届かない|失敗|不具合|直し/i],
-  ["procedure", /方法|手順|どうやって|どこから|設定|使い方|始め方|導入/i],
+  ["procedure", /方法|手順|どうやって|どこから|どこを|何を確認|確認すれば|確認方法|設定|使い方|始め方|導入/i],
   ["pricing", /料金|価格|いくら|費用|課金|クレジット/i],
   ["contract", /契約|解約|退会|返金|更新|支払/i],
-  ["availability", /使える|対応|可能|できる|未実装|提供/i],
+  ["availability", /使える|使えます|使えない|利用でき|対応|可能|できる|未実装|提供/i],
   ["limitation", /制限|上限|できない|禁止|対象外|条件/i],
   ["definition", /とは|何ですか|何なの|意味|概要/i],
 ];
@@ -97,17 +97,24 @@ function splitDocument(message) {
     .map((line) => line.replace(/^\s*(?:[-*・]|\d+[.)．、]|[①-⑳])\s*/, "").trim())
     .filter(Boolean);
   const source = lines.length ? lines : [normalize(message)];
-  const parts = [];
+  const candidates = [];
   for (const line of source) {
     const sentences = line.split(/(?<=[?？!！。])\s*/).filter(Boolean);
     for (const sentence of sentences) {
       for (const part of sentence.split(/\s*(?:それと|さらに|加えて|あと、|また、)\s*/)) {
-        const cleaned = part.trim().replace(/[。\s]+$/g, "");
-        if (cleaned && !parts.includes(cleaned)) parts.push(cleaned);
+        const raw = part.trim();
+        if (!raw) continue;
+        const questionMark = /[?？]$/.test(raw);
+        const cleaned = raw.replace(/[。?？\s]+$/g, "").trim();
+        if (!cleaned) continue;
+        const actionable = questionMark || detectIntent(cleaned) !== "general" || /教えて|知りたい|確認したい/.test(cleaned);
+        candidates.push({ text: cleaned, actionable });
       }
     }
   }
-  return (parts.length ? parts : [normalize(message)]).slice(0, 8);
+  const actionable = candidates.filter((item) => item.actionable).map((item) => item.text);
+  const selected = actionable.length ? actionable : candidates.map((item) => item.text);
+  return [...new Set(selected)].slice(0, 8).length ? [...new Set(selected)].slice(0, 8) : [normalize(message)];
 }
 
 function searchTerms(text, subject, intent, activeTopic) {
