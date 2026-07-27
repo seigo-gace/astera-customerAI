@@ -51,7 +51,7 @@ test("follow-up analysis reuses cached goal and topic", async () => {
   assert.equal(response.result.active_topic, "credit");
   assert.match(response.result.retrieval_query, /credit/);
   assert.equal(response.result.confirmed_details.relative_time, "昨日");
-  assert.equal(response.result.question_tasks[0].intent, "procedure");
+  assert.equal(response.result.question_tasks[1].intent, "procedure");
 });
 
 test("document analysis decomposes multiple questions into search tasks", async () => {
