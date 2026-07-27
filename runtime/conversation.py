@@ -68,13 +68,23 @@ class ConversationCache:
         return context.model_copy(update={"turns": turns[-self.max_turns :]})
 
     def compact(self, context: SessionContext, *, last_turns: int = 6) -> dict[str, Any]:
+        turns = []
+        for turn in context.turns[-last_turns:]:
+            turns.append(
+                {
+                    "role": turn.role,
+                    "text": turn.text[:1200],
+                    "message_id": turn.message_id,
+                    "kb_ids": turn.kb_ids[-4:],
+                }
+            )
         return {
-            "user_goal": context.user_goal,
-            "active_topic": context.active_topic,
+            "user_goal": context.user_goal[:1000],
+            "active_topic": context.active_topic[:160],
             "confirmed_details": context.confirmed_details,
-            "unresolved_questions": context.unresolved_questions[-5:],
+            "unresolved_questions": [item[:500] for item in context.unresolved_questions[-5:]],
             "last_kb_ids": context.last_kb_ids[-5:],
-            "turns": [turn.model_dump(mode="json") for turn in context.turns[-last_turns:]],
+            "turns": turns,
         }
 
     def status(self) -> dict[str, int]:
