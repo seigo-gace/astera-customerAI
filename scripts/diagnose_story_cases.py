@@ -12,6 +12,7 @@ from tests.test_story_runtime import run_message, story_pages
 
 
 async def main() -> None:
+    diagnostics: list[dict] = []
     with tempfile.TemporaryDirectory(prefix="customer-ai-diagnostic-") as temporary:
         root = Path(temporary) / "data"
         os.environ["CUSTOMER_AI_DATA_ROOT"] = str(root)
@@ -36,8 +37,7 @@ async def main() -> None:
                     message=message,
                     source=source,
                 )
-                print("DIAGNOSTIC_CASE_START")
-                print(json.dumps({
+                row = {
                     "message": message,
                     "status": result["status"],
                     "answer": result["answer"],
@@ -46,10 +46,16 @@ async def main() -> None:
                     "blueprint": result["blueprint"],
                     "execution": result["execution"],
                     "analysis": result["analysis"],
-                }, ensure_ascii=False, sort_keys=True))
+                }
+                diagnostics.append(row)
+                print("DIAGNOSTIC_CASE_START")
+                print(json.dumps(row, ensure_ascii=False, sort_keys=True))
                 print("DIAGNOSTIC_CASE_END")
         finally:
             await service.shutdown()
+    output = Path("test-results") / "story-diagnostics.json"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(diagnostics, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
 
 if __name__ == "__main__":
