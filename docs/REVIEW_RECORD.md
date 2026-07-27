@@ -1,65 +1,86 @@
-# Customer AI conversation-quality review record
+# Astera Customer AI implementation review record
 
-## Corrected focus
+## Corrected implementation basis
 
-The purpose is not to install every reusable mechanism. The purpose is to improve the lightweight model's answer accuracy across the first question and multiple follow-up turns.
+The previous main-branch simplification preserved conversation continuity but reduced the support runtime to one broad KB query, one model response, and one small consistency check. That did not satisfy the required document decomposition, per-question retrieval, evidence binding, answer planning, controlled composition, and KB feedback loop.
 
-The runtime must preserve:
+This branch keeps the useful bounded conversation cache and private HF/Gateway boundaries, while rebuilding the response path around dedicated Customer AI responsibilities.
 
-- what the user is trying to solve
-- the current topic
-- confirmed details already supplied
-- unanswered points
-- the latest bounded conversation turns
-- the KB pages relevant to the continuing conversation
+## Review 1 — Reuse without lazy addition
 
-## Removed as unnecessary
+Question: Did the implementation merely add new modules beside the old one-pass path?
 
-- generic structured-skill registry
-- generated `$customer-ai.*` skills
-- large generic execution contracts
-- routine bot supervisor
-- question-insight automation
-- persistent Worker Thread pool
-- six-way analysis worker split
+Result:
 
-These mechanisms added weight without directly improving the user's multi-turn answer continuity.
+- `ConversationCore` now calls `SupportRuntime.prepare()` before any model decision.
+- The old single retrieval query is no longer the answer path.
+- Search is planned per `QuestionTask` and executed with bounded parallelism.
+- Evidence is bound back to the task it supports.
+- The answer blueprint is the single source for deterministic fallback and model composition.
+- Existing conversation cache and Gateway/HF boundaries are reused because their responsibilities remain correct.
 
-## Remaining processing path
+## Review 2 — No generic all-in orchestration
 
-```text
-Current message
-+ bounded session context
-→ lightweight V8 turn analysis
-→ context-expanded KB search with short query cache
-→ lightweight model response using recent turns and KB
-→ V8 consistency verification
-→ bounded session context update
-```
+Question: Did the branch restore the overbuilt generic Skill Registry, many routine bots, or a general worker pool?
 
-## Cache rules
+Result:
 
-- Session context is cached in memory for fast follow-ups.
-- The same context is persisted to the mounted private bucket for restart recovery.
-- Only a bounded number of recent turns is retained.
-- KB query results use a short bounded cache.
-- No unlimited transcript or unlimited KB result cache is allowed.
+- No generic `SkillRegistry` exists.
+- No `RoutineBotSupervisor` exists.
+- No generic `WorkerPool` exists.
+- The new module is purpose-built for Japanese support preparation.
+- V8 performs bounded deterministic analysis and validation only.
+- The implementation does not execute the Astera engine.
 
-## Answer-quality checks
+## Review 3 — Lightweight model boundary
 
-1. A follow-up without a repeated product name must keep the previous active topic.
-2. The original user goal must remain available to the model.
-3. Already answered questions must not be asked again.
-4. New details in a follow-up must be merged into confirmed details.
-5. The KB search query must include the current message and prior goal when necessary.
-6. The model may cite only KB IDs supplied in the current packet.
-7. A response that drifts to another topic must be rejected.
-8. If the model is unavailable, the confirmed KB answer remains usable.
+Question: Can the model choose facts, routes, searches, tasks, actions, or completion?
 
-## Verification commands
+Result:
+
+- The model receives only a prepared Support Packet.
+- Question tasks, search plans, evidence, and blueprint are prepared first.
+- Exact deterministic answers do not invoke the model.
+- Multi-task composition may invoke the model once.
+- Validation failures allow one targeted repair only.
+- A second failure returns to the deterministic blueprint.
+- Unknown task or evidence references fail validation.
+
+## Review 4 — Multi-turn answer continuity
+
+Question: Does follow-up support remain coherent after adding structured task processing?
+
+Result:
+
+- Existing goal, active topic, confirmed details, and recent turns remain bounded and persistent.
+- Answered question IDs and a question ledger are now persisted.
+- Reusable evidence summaries and the previous blueprint are persisted.
+- Same-session processing remains protected by the session lease.
+- Follow-up analysis receives the compact state rather than an unlimited transcript.
+
+## Review 5 — KB feedback safety
+
+Question: Are user questions used to improve the KB without becoming unverified facts?
+
+Result:
+
+- Questions are normalized and redacted.
+- Session IDs are hashed.
+- Duplicate candidates use a deterministic fingerprint.
+- Candidate records include tasks, search plans, matched KB IDs, gap types, and validation failures.
+- Every candidate requires approval.
+- Auto-publication is false.
+- No direct Notion write is performed by `FeedbackStore`.
+
+## Review 6 — Required verification
+
+The branch is accepted only after all of the following pass on GitHub Actions:
 
 ```bash
 python scripts/review.py --all
+ruff check . --select E9,F63,F7,F82
 pytest -q
 npm test
 ```
+
+HF deployment is a separate release action and must not occur until tests pass, production secrets are configured, the private Space and bucket are verified, Gateway delivery/callback succeeds, and Cloudflare end-to-end tests pass.
