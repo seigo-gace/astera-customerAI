@@ -12,6 +12,13 @@ def _int(name: str, default: int) -> int:
     return value
 
 
+def _bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     data_root: Path
@@ -37,6 +44,16 @@ class Settings:
     session_cache_max_turns: int
     kb_cache_ttl_seconds: int
     kb_cache_max_entries: int
+    response_cache_ttl_seconds: int
+    response_cache_max_entries: int
+    resolver_url: str
+    resolver_secret: str
+    resolver_timeout_seconds: int
+    resolver_cache_ttl_seconds: int
+    max_repair_attempts: int
+    enable_maintenance_bot: bool
+    maintenance_interval_seconds: int
+    gap_summary_interval_seconds: int
 
     @classmethod
     def load(cls) -> "Settings":
@@ -50,7 +67,7 @@ class Settings:
             notion_data_source_id=os.getenv("NOTION_DATA_SOURCE_ID", ""),
             model_id=os.getenv("CUSTOMER_AI_MODEL_ID", "Qwen/Qwen3-4B-Instruct-2507"),
             model_revision=os.getenv("CUSTOMER_AI_MODEL_REVISION", ""),
-            enable_model=os.getenv("CUSTOMER_AI_ENABLE_MODEL", "0") == "1",
+            enable_model=_bool("CUSTOMER_AI_ENABLE_MODEL", False),
             gpu_daily_budget_seconds=_int("CUSTOMER_AI_GPU_DAILY_BUDGET_SECONDS", 2100),
             node_binary=os.getenv("CUSTOMER_AI_NODE_BINARY", "node"),
             node_socket=Path(os.getenv("CUSTOMER_AI_NODE_SOCKET", "/tmp/customer-ai-v8.sock")),
@@ -65,8 +82,18 @@ class Settings:
             session_cache_max_turns=_int("CUSTOMER_AI_SESSION_CACHE_MAX_TURNS", 12),
             kb_cache_ttl_seconds=_int("CUSTOMER_AI_KB_CACHE_TTL_SECONDS", 120),
             kb_cache_max_entries=_int("CUSTOMER_AI_KB_CACHE_MAX_ENTRIES", 256),
+            response_cache_ttl_seconds=_int("CUSTOMER_AI_RESPONSE_CACHE_TTL_SECONDS", 300),
+            response_cache_max_entries=_int("CUSTOMER_AI_RESPONSE_CACHE_MAX_ENTRIES", 256),
+            resolver_url=os.getenv("CUSTOMER_AI_RESOLVER_URL", ""),
+            resolver_secret=os.getenv("CUSTOMER_AI_RESOLVER_SECRET", ""),
+            resolver_timeout_seconds=_int("CUSTOMER_AI_RESOLVER_TIMEOUT_SECONDS", 8),
+            resolver_cache_ttl_seconds=_int("CUSTOMER_AI_RESOLVER_CACHE_TTL_SECONDS", 30),
+            max_repair_attempts=min(1, _int("CUSTOMER_AI_MAX_REPAIR_ATTEMPTS", 1)),
+            enable_maintenance_bot=_bool("CUSTOMER_AI_ENABLE_MAINTENANCE_BOT", True),
+            maintenance_interval_seconds=_int("CUSTOMER_AI_MAINTENANCE_INTERVAL_SECONDS", 60),
+            gap_summary_interval_seconds=_int("CUSTOMER_AI_GAP_SUMMARY_INTERVAL_SECONDS", 900),
         )
 
     def ensure_directories(self) -> None:
-        for name in ("jobs", "sessions", "kb/snapshots", "runtime", "temporary"):
+        for name in ("jobs", "sessions", "kb/snapshots", "runtime", "temporary", "gaps", "maintenance"):
             (self.data_root / name).mkdir(parents=True, exist_ok=True)
