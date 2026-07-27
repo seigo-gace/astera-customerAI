@@ -39,7 +39,6 @@ CREATE VIRTUAL TABLE IF NOT EXISTS kb_fts USING fts5(
   tokenize='unicode61'
 );
 """
-
 MIN_EVIDENCE_SCORE = 5.0
 QUERY_ALIASES: dict[str, tuple[str, ...]] = {
     "credit": ("クレジット", "残高", "付与", "決済"),
@@ -238,6 +237,65 @@ class KBIndex:
         return expanded[:20]
 
 
+def _lines(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [line.strip() for line in value.splitlines() if line.strip()]
+    if isinstance(value, list):
+        result: list[str] = []
+        for item in value:
+            result.extend(_lines(item))
+        return result
+    if isinstance(value, dict):
+        return [f"{key}: {item}" for key, item in value.items() if str(item).strip()]
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _section(title: str, value: Any, *, numbered: bool = False) -> str:
+    values = _lines(value)
+    if not values:
+        return ""
+    if numbered:
+        content = "\n".join(f"{index}. {item}" for index, item in enumerate(values, start=1))
+    else:
+        content = "\n".join(f"- {item}" for item in values)
+    return f"## {title}\n\n{content}"
+
+
+def compose_structured_body(page: dict[str, Any]) -> str:
+    sections = [
+        _section("目的・概要", page.get("目的")),
+        _section("理由", page.get("理由")),
+        _section("前提条件", page.get("前提条件")),
+        _section("利用条件", page.get("利用条件")),
+        _section("手順", page.get("手順"), numbered=True),
+        _section("条件", page.get("条件")),
+        _section("例外", page.get("例外")),
+        _section("障害症状", page.get("障害症状")),
+        _section("考えられる原因", page.get("原因")),
+        _section("確認方法", page.get("確認方法"), numbered=True),
+        _section("解決手順", page.get("解決手順"), numbered=True),
+        _section("完了確認", page.get("完了確認")),
+        _section("追加質問への対応", page.get("追加質問")),
+        _section("関連KB", page.get("関連KB")),
+    ]
+    return "\n\n".join(section for section in sections if section).strip()
+
+
+def _search_terms(page: dict[str, Any]) -> str:
+    values: list[str] = []
+    for key in ("製品", "システム", "カテゴリ", "質問種別", "検索語", "同義語", "追加質問"):
+        values.extend(_lines(page.get(key)))
+    return " ".join(dict.fromkeys(values))
+
+
+def _answer_boundary(page: dict[str, Any]) -> str:
+    values = [*_lines(page.get("回答境界")), *_lines(page.get("禁止回答"))]
+    return "\n".join(dict.fromkeys(values))
+
+
 def normalize_page(page: dict[str, Any]) -> tuple[Any, ...] | None:
     if page.get("公開状態") != "公開":
         return None
@@ -247,8 +305,9 @@ def normalize_page(page: dict[str, Any]) -> tuple[Any, ...] | None:
         return None
     question = redact_text(str(page.get("質問", ""))).text.strip()
     short = redact_text(str(page.get("短い回答", ""))).text.strip()
-    body = redact_text(str(page.get("本文", page.get("content", "")))).text.strip()
-    boundary = redact_text(str(page.get("回答境界", ""))).text.strip()
+    raw_body = str(page.get("本文", "")).strip() or compose_structured_body(page)
+    body = redact_text(raw_body).text.strip()
+    boundary = redact_text(_answer_boundary(page)).text.strip()
     if not question or not short or not body:
         return None
     if contains_internal_implementation("\n".join((question, short, body, boundary))):
@@ -258,7 +317,7 @@ def normalize_page(page: dict[str, Any]) -> tuple[Any, ...] | None:
         question,
         short,
         body,
-        str(page.get("検索語", "")),
+        _search_terms(page),
         boundary,
         ",".join(page.get("対象", [])) if isinstance(page.get("対象"), list) else str(page.get("対象", "")),
         str(page.get("公開状態")),
