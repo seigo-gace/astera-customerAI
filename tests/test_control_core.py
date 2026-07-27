@@ -39,8 +39,7 @@ class RecordingEngine:
 
     def execute(self, packet: dict) -> dict:
         self.packets.append(packet)
-        conversation = packet["conversation"]
-        goal = conversation.get("user_goal") or "クレジット未反映を解決する"
+        goal = packet["analysis"].get("user_goal") or packet["conversation"].get("user_goal") or packet["message"]
         return {
             "answer": "購入時刻を引き継いで、決済状態とクレジット付与状態を確認します。",
             "user_goal": goal,
