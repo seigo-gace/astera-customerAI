@@ -12,7 +12,7 @@ from .storage import AtomicStore
 
 
 class ConversationCache:
-    """Small in-memory LRU backed by one persistent session context file."""
+    """Bounded in-memory LRU backed by one persistent session context file."""
 
     def __init__(self, root: Path, *, ttl_seconds: int, max_sessions: int, max_turns: int):
         self.root = root / "sessions"
@@ -40,11 +40,16 @@ class ConversationCache:
         return SessionContext.model_validate(copy.deepcopy(context.model_dump(mode="json")))
 
     def save(self, context: SessionContext) -> None:
+        evidence_items = list(context.evidence_cache.items())[-16:]
         trimmed = context.model_copy(
             update={
                 "turns": context.turns[-self.max_turns :],
-                "unresolved_questions": context.unresolved_questions[-8:],
-                "last_kb_ids": context.last_kb_ids[-8:],
+                "unresolved_questions": context.unresolved_questions[-16:],
+                "last_kb_ids": context.last_kb_ids[-16:],
+                "answered_question_ids": context.answered_question_ids[-32:],
+                "question_ledger": context.question_ledger[-24:],
+                "evidence_cache": dict(evidence_items),
+                "last_blueprint": _bound_structure(context.last_blueprint, max_chars=16000),
                 "updated_at": datetime.now(UTC),
             }
         )
@@ -78,17 +83,29 @@ class ConversationCache:
                     "kb_ids": turn.kb_ids[-4:],
                 }
             )
+        evidence = {
+            key: _bound_structure(value, max_chars=1600)
+            for key, value in list(context.evidence_cache.items())[-8:]
+        }
         return {
             "user_goal": context.user_goal[:1000],
             "active_topic": context.active_topic[:160],
-            "confirmed_details": context.confirmed_details,
-            "unresolved_questions": [item[:500] for item in context.unresolved_questions[-5:]],
-            "last_kb_ids": context.last_kb_ids[-5:],
+            "confirmed_details": _bound_structure(context.confirmed_details, max_chars=4000),
+            "unresolved_questions": [item[:500] for item in context.unresolved_questions[-8:]],
+            "last_kb_ids": context.last_kb_ids[-8:],
+            "answered_question_ids": context.answered_question_ids[-16:],
+            "question_ledger": [_bound_structure(item, max_chars=1000) for item in context.question_ledger[-12:]],
+            "evidence_cache": evidence,
+            "last_blueprint": _bound_structure(context.last_blueprint, max_chars=5000),
             "turns": turns,
         }
 
     def status(self) -> dict[str, int]:
-        return {"memory_sessions": len(self._memory), "max_sessions": self.max_sessions, "max_turns": self.max_turns}
+        return {
+            "memory_sessions": len(self._memory),
+            "max_sessions": self.max_sessions,
+            "max_turns": self.max_turns,
+        }
 
     def _path(self, session_id: str) -> Path:
         return self.root / session_id / "context.json"
@@ -98,3 +115,18 @@ class ConversationCache:
         self._memory.move_to_end(context.session_id)
         while len(self._memory) > self.max_sessions:
             self._memory.popitem(last=False)
+
+
+def _bound_structure(value: Any, *, max_chars: int) -> Any:
+    """Bound persistent helper state without converting it into an unbounded transcript."""
+    if isinstance(value, str):
+        return value[:max_chars]
+    if isinstance(value, list):
+        return [_bound_structure(item, max_chars=max(128, max_chars // max(1, min(len(value), 16)))) for item in value[-32:]]
+    if isinstance(value, dict):
+        bounded: dict[str, Any] = {}
+        per_item = max(128, max_chars // max(1, min(len(value), 32)))
+        for key, item in list(value.items())[-32:]:
+            bounded[str(key)[:160]] = _bound_structure(item, max_chars=per_item)
+        return bounded
+    return value
