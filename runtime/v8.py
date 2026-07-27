@@ -39,6 +39,15 @@ def _node_major(binary: str) -> int:
         return 0
 
 
+def _safe_socket_path(configured: Path) -> Path:
+    """Unix sockets have a short platform path limit; use a stable /tmp path when needed."""
+    encoded = os.fsencode(str(configured))
+    if len(encoded) <= 96:
+        return configured
+    digest = hashlib.sha256(encoded).hexdigest()[:20]
+    return Path("/tmp") / f"customer-ai-v8-{digest}.sock"
+
+
 class NodeBootstrap:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -102,16 +111,23 @@ class V8Supervisor:
         self.process: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
         self.node_binary = settings.node_binary
+        self.socket_path = _safe_socket_path(settings.node_socket)
 
     async def start(self) -> None:
         async with self._lock:
             if self.process and self.process.returncode is None:
                 return
+            if self.process is not None:
+                try:
+                    await self.process.wait()
+                except (ProcessLookupError, ChildProcessError):
+                    pass
+                self.process = None
             self.node_binary = await asyncio.to_thread(NodeBootstrap(self.settings).resolve)
-            self.settings.node_socket.unlink(missing_ok=True)
+            self.socket_path.unlink(missing_ok=True)
             script = Path(__file__).resolve().parent.parent / "v8" / "server.mjs"
             env = os.environ.copy()
-            env["CUSTOMER_AI_NODE_SOCKET"] = str(self.settings.node_socket)
+            env["CUSTOMER_AI_NODE_SOCKET"] = str(self.socket_path)
             self.process = await asyncio.create_subprocess_exec(
                 self.node_binary,
                 f"--max-old-space-size={self.settings.node_memory_mb}",
@@ -121,24 +137,47 @@ class V8Supervisor:
                 stderr=asyncio.subprocess.PIPE,
             )
             for _ in range(50):
-                if self.settings.node_socket.exists():
+                if self.socket_path.exists():
                     return
                 if self.process.returncode is not None:
-                    break
+                    stderr = b""
+                    if self.process.stderr is not None:
+                        stderr = await self.process.stderr.read()
+                    message = stderr.decode("utf-8", errors="replace").strip()
+                    raise V8Unavailable(message or "Node V8 process exited before socket readiness")
                 await asyncio.sleep(0.1)
+            await self.stop()
             raise V8Unavailable("Node V8 socket did not become ready")
 
     async def stop(self) -> None:
-        if not self.process:
-            return
-        self.process.terminate()
-        try:
-            await asyncio.wait_for(self.process.wait(), timeout=5)
-        except TimeoutError:
-            self.process.kill()
-            await self.process.wait()
+        process = self.process
         self.process = None
-        self.settings.node_socket.unlink(missing_ok=True)
+        try:
+            if process is None:
+                return
+            if process.returncode is None:
+                try:
+                    process.terminate()
+                except ProcessLookupError:
+                    pass
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except TimeoutError:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        await process.wait()
+                    except (ProcessLookupError, ChildProcessError):
+                        pass
+            else:
+                try:
+                    await process.wait()
+                except (ProcessLookupError, ChildProcessError):
+                    pass
+        finally:
+            self.socket_path.unlink(missing_ok=True)
 
     async def request(self, phase: str, payload: dict[str, Any], *, timeout: float = 15.0) -> dict[str, Any]:
         if not self.process or self.process.returncode is not None:
@@ -151,7 +190,7 @@ class V8Supervisor:
             "payload": payload,
         }
         try:
-            reader, writer = await asyncio.open_unix_connection(str(self.settings.node_socket))
+            reader, writer = await asyncio.open_unix_connection(str(self.socket_path))
             writer.write((json.dumps(request, ensure_ascii=False) + "\n").encode())
             await writer.drain()
             raw = await asyncio.wait_for(reader.readline(), timeout=timeout)
