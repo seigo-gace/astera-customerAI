@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -24,6 +25,58 @@ HIGH_ENTROPY = re.compile(r"\b[A-Za-z0-9_+/=-]{40,}\b")
 class RedactionResult:
     text: str
     kinds: list[str]
+
+
+def _decode_secret(secret: str) -> bytes:
+    if secret.startswith("base64:"):
+        try:
+            return base64.b64decode(secret.removeprefix("base64:"), validate=True)
+        except ValueError:
+            return b""
+    return secret.encode("utf-8")
+
+
+def verify_standard_webhook(
+    raw_body: bytes,
+    event_id: str,
+    timestamp: str,
+    signature: str,
+    secret: str,
+    *,
+    tolerance_seconds: int = 300,
+) -> bool:
+    if not secret or not event_id or not timestamp or not signature:
+        return False
+    try:
+        ts = int(timestamp)
+        body_text = raw_body.decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return False
+    if tolerance_seconds and abs(int(time.time()) - ts) > tolerance_seconds:
+        return False
+    key = _decode_secret(secret)
+    if not key:
+        return False
+    expected = hmac.new(key, f"{event_id}.{timestamp}.{body_text}".encode("utf-8"), hashlib.sha256).digest()
+    candidates: list[bytes] = []
+    for item in signature.split():
+        version, separator, encoded = item.partition(",")
+        if version != "v1" or not separator or not encoded:
+            continue
+        try:
+            candidates.append(base64.b64decode(encoded, validate=True))
+        except ValueError:
+            continue
+    return any(hmac.compare_digest(expected, candidate) for candidate in candidates)
+
+
+def sign_standard_webhook(raw_body: bytes, event_id: str, timestamp: str, secret: str) -> str:
+    key = _decode_secret(secret)
+    if not key:
+        raise ValueError("standard_webhook_secret_invalid")
+    body_text = raw_body.decode("utf-8")
+    digest = hmac.new(key, f"{event_id}.{timestamp}.{body_text}".encode("utf-8"), hashlib.sha256).digest()
+    return "v1," + base64.b64encode(digest).decode("ascii")
 
 
 def verify_hmac(raw_body: bytes, timestamp: str, signature: str, secret: str, *, tolerance_seconds: int = 300) -> bool:
