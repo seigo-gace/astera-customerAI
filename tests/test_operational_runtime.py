@@ -7,16 +7,34 @@ from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
-from runtime.security import canonical_json, sign_hmac
+from runtime.security import canonical_json, sign_hmac, sign_standard_webhook
 from tests.test_story_runtime import story_pages
 
 
-def signed_headers(body: bytes, secret: str = "test-secret", *, content_type: str = "application/json") -> dict[str, str]:
+def internal_signed_headers(body: bytes, secret: str = "test-secret", *, content_type: str = "application/json") -> dict[str, str]:
     timestamp = str(int(time.time()))
     return {
         "content-type": content_type,
         "x-webhook-timestamp": timestamp,
         "x-webhook-signature": sign_hmac(body, timestamp, secret),
+    }
+
+
+def gateway_signed_headers(
+    body: bytes,
+    secret: str = "test-secret",
+    *,
+    webhook_id: str = "wh_customer_ai_delivery_0001",
+    event_type: str = "customer.ai.message.requested",
+) -> dict[str, str]:
+    timestamp = str(int(time.time()))
+    return {
+        "content-type": "application/json",
+        "webhook-id": webhook_id,
+        "webhook-timestamp": timestamp,
+        "webhook-signature": sign_standard_webhook(body, webhook_id, timestamp, secret),
+        "webhook-event": event_type,
+        "x-gace-destination": "customer-ai-hf",
     }
 
 
@@ -64,21 +82,21 @@ def test_operational_signed_ingress_processing_persistence_and_follow_up(data_ro
         bad_sync = client.post("/internal/kb/sync", content=sync_body, headers={"content-type": "application/json"})
         assert bad_sync.status_code == 401
 
-        synced = client.post("/internal/kb/sync", content=sync_body, headers=signed_headers(sync_body))
+        synced = client.post("/internal/kb/sync", content=sync_body, headers=internal_signed_headers(sync_body))
         assert synced.status_code == 202
         assert synced.json()["source_pages"] == len(story_pages())
 
         bad_accept = client.post(
             "/internal/customer-ai/accept",
             content=first_body,
-            headers={"content-type": "application/cloudevents+json"},
+            headers={"content-type": "application/json"},
         )
         assert bad_accept.status_code == 401
 
         accepted = client.post(
             "/internal/customer-ai/accept",
             content=first_body,
-            headers=signed_headers(first_body, content_type="application/cloudevents+json"),
+            headers=gateway_signed_headers(first_body),
         )
         assert accepted.status_code == 202
         assert accepted.json()["created"] is True
@@ -87,7 +105,7 @@ def test_operational_signed_ingress_processing_persistence_and_follow_up(data_ro
         duplicate = client.post(
             "/internal/customer-ai/accept",
             content=first_body,
-            headers=signed_headers(first_body, content_type="application/cloudevents+json"),
+            headers=gateway_signed_headers(first_body, webhook_id="wh_customer_ai_delivery_0002"),
         )
         assert duplicate.status_code == 202
         assert duplicate.json()["created"] is False
@@ -120,7 +138,10 @@ def test_operational_signed_ingress_processing_persistence_and_follow_up(data_ro
         accepted_follow_up = restarted_client.post(
             "/internal/customer-ai/accept",
             content=follow_up_body,
-            headers=signed_headers(follow_up_body, content_type="application/cloudevents+json"),
+            headers=gateway_signed_headers(
+                follow_up_body,
+                webhook_id="wh_customer_ai_delivery_0003",
+            ),
         )
         assert accepted_follow_up.status_code == 202
 
