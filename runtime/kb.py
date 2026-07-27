@@ -83,6 +83,20 @@ class KBIndex:
             old.close()
         return True
 
+    def get_by_ids(self, kb_ids: list[str]) -> list[KBHit]:
+        if not self.open() or self._connection is None:
+            return []
+        ids = [str(item).removeprefix("kb:") for item in kb_ids if str(item).strip()][:16]
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        rows = self._connection.execute(
+            f"SELECT *, 1000.0 AS score FROM kb_pages WHERE kb_id IN ({placeholders})",
+            ids,
+        ).fetchall()
+        by_id = {row["kb_id"]: self._row_to_hit(row) for row in rows}
+        return [by_id[item] for item in ids if item in by_id]
+
     def search(self, query: str, *, limit: int = 5) -> list[KBHit]:
         if not self.open() or self._connection is None or not self._version:
             return []
@@ -121,18 +135,7 @@ class KBIndex:
         )
         params = [*score_params, *where_params, limit]
         rows = self._connection.execute(sql, params).fetchall()
-        hits = [
-            KBHit(
-                kb_id=row["kb_id"],
-                question=row["question"],
-                short_answer=row["short_answer"],
-                body=row["body"],
-                score=float(row["score"]),
-                answer_boundary=row["answer_boundary"],
-                target=row["target"],
-            )
-            for row in rows
-        ]
+        hits = [self._row_to_hit(row) for row in rows]
         self._query_cache[cache_key] = (now + self._cache_ttl_seconds, hits)
         self._query_cache.move_to_end(cache_key)
         while len(self._query_cache) > self._cache_max_entries:
@@ -174,6 +177,18 @@ class KBIndex:
         os.replace(manifest_tmp, self._manifest_path())
         self._query_cache.clear()
         return SnapshotInfo(version=version, path=final)
+
+    @staticmethod
+    def _row_to_hit(row: sqlite3.Row) -> KBHit:
+        return KBHit(
+            kb_id=row["kb_id"],
+            question=row["question"],
+            short_answer=row["short_answer"],
+            body=row["body"],
+            score=float(row["score"]),
+            answer_boundary=row["answer_boundary"],
+            target=row["target"],
+        )
 
 
 def normalize_page(page: dict[str, Any]) -> tuple[Any, ...] | None:
