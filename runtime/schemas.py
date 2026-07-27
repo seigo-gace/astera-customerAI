@@ -14,6 +14,7 @@ JobStatus = Literal[
     "queued_processing",
     "processing",
     "awaiting_clarification",
+    "awaiting_resolution",
     "retrying",
     "degraded",
     "completed",
@@ -39,6 +40,9 @@ class ConversationTurn(BaseModel):
     text: str = Field(min_length=1, max_length=8000)
     message_id: str = ""
     kb_ids: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    question_ids: list[str] = Field(default_factory=list)
+    answer_summary: str = Field(default="", max_length=1200)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -46,9 +50,15 @@ class SessionContext(BaseModel):
     session_id: str
     user_goal: str = ""
     active_topic: str = ""
+    response_mode: str = "direct"
     confirmed_details: dict[str, Any] = Field(default_factory=dict)
+    user_state: dict[str, Any] = Field(default_factory=dict)
     unresolved_questions: list[str] = Field(default_factory=list)
+    answered_questions: list[str] = Field(default_factory=list)
     last_kb_ids: list[str] = Field(default_factory=list)
+    last_evidence_ids: list[str] = Field(default_factory=list)
+    topic_evidence: dict[str, list[str]] = Field(default_factory=dict)
+    last_answer_summary: str = ""
     turns: list[ConversationTurn] = Field(default_factory=list)
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -97,13 +107,16 @@ class JobRecord(BaseModel):
 class JobResult(BaseModel):
     job_id: str
     session_id: str
-    status: Literal["completed", "awaiting_clarification", "failed"]
+    status: Literal["completed", "awaiting_clarification", "awaiting_resolution", "failed"]
     answer: str
     kb_ids: list[str] = Field(default_factory=list)
     ai_invoked: bool = False
     clarification: str | None = None
     facts: list[str] = Field(default_factory=list)
     context_used: bool = False
+    cache_hit: bool = False
+    repair_attempted: bool = False
+    resolver_used: bool = False
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
