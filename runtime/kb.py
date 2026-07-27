@@ -101,7 +101,8 @@ class KBIndex:
             return []
         score_parts: list[str] = []
         where_parts: list[str] = []
-        params: list[Any] = []
+        score_params: list[Any] = []
+        where_params: list[Any] = []
         for term in terms:
             pattern = f"%{term}%"
             score_parts.append(
@@ -110,15 +111,15 @@ class KBIndex:
                 "CASE WHEN short_answer LIKE ? THEN 5 ELSE 0 END + "
                 "CASE WHEN body LIKE ? THEN 2 ELSE 0 END)"
             )
-            params.extend([pattern, pattern, pattern, pattern])
+            score_params.extend([pattern, pattern, pattern, pattern])
             where_parts.append("(question LIKE ? OR search_terms LIKE ? OR short_answer LIKE ? OR body LIKE ?)")
-            params.extend([pattern, pattern, pattern, pattern])
+            where_params.extend([pattern, pattern, pattern, pattern])
         sql = (
             "SELECT *, (" + " + ".join(score_parts) + ") AS score FROM kb_pages WHERE "
             + " OR ".join(where_parts)
             + " ORDER BY score DESC, kb_id ASC LIMIT ?"
         )
-        params.append(limit)
+        params = [*score_params, *where_params, limit]
         rows = self._connection.execute(sql, params).fetchall()
         hits = [
             KBHit(
