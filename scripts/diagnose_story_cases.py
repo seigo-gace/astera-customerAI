@@ -49,13 +49,16 @@ async def main() -> None:
                 }
                 diagnostics.append(row)
                 print("DIAGNOSTIC_CASE_START")
-                print(json.dumps(row, ensure_ascii=False, sort_keys=True))
+                print(json.dumps(row, ensure_ascii=False, sort_keys=True, default=str))
                 print("DIAGNOSTIC_CASE_END")
         finally:
             await service.shutdown()
     output = Path("test-results") / "story-diagnostics.json"
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(diagnostics, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    output.write_text(
+        json.dumps(diagnostics, ensure_ascii=False, indent=2, sort_keys=True, default=str),
+        encoding="utf-8",
+    )
 
 
 if __name__ == "__main__":
