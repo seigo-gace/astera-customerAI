@@ -8,35 +8,38 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 REVIEWS = {
-    "architecture": {
-        "prompt": "Review controlled execution, deterministic routing, structured skill ownership, V8 parallel workers, bot routines, state ownership, durability, idempotency, and recovery. The model must not own execution.",
-        "checks": ["ControlledExecutionCore", "$customer-ai.execution-contract", "SkillRegistry", "WorkerPool", "RoutineBotSupervisor", "lease", "Gateway", "Recovery"],
+    "conversation": {
+        "prompt": "Review whether first answers and multiple follow-up turns preserve the same user goal, active topic, confirmed details, unresolved questions, recent turns, and relevant KB context.",
+        "checks": ["ConversationCache", "user_goal", "active_topic", "unresolved_questions", "recent turns", "retrieval_query", "context_used"],
+    },
+    "lightweight": {
+        "prompt": "Review whether only directly useful mechanisms remain: bounded session cache, bounded KB query cache, one lightweight V8 turn analysis, one model response, and one consistency verification.",
+        "checks": ["session_cache_max_turns", "kb_cache_max_entries", "analyze_turn", "verify_turn", "ConversationLanguageEngine"],
     },
     "security": {
-        "prompt": "Review secrets, PII, injection, unauthorized disclosure, evidence boundaries, unverified action claims, and ensure user/KB/model text is never executed as code.",
-        "checks": ["verify_hmac", "redact_text", "sanitize_structure", "internal_implementation", "used_evidence_ids", "output-guard"],
-    },
-    "operations": {
-        "prompt": "Review free-tier deployability, pinned dependencies, readiness, deterministic degradation, TGserver routing, routine bot recovery, tests, and rollback.",
-        "checks": ["readyz", "requirements", "deterministic", "TGserver", "model_revision", "question-insight"],
-    },
-    "engine-boundary": {
-        "prompt": "Review that the language engine is exchangeable and can only run after Execution Contract, State Capsule, structured Skill results, verified Evidence, and a deterministic draft exist.",
-        "checks": ["ControlledLanguageEngine", "execution_contract", "state_capsule", "skill_results", "verified_evidence_required", "language_engine_not_allowed_by_control_core"],
+        "prompt": "Review PII and secret redaction, internal implementation leakage, unknown KB references, and unverified action claims without adding unrelated orchestration layers.",
+        "checks": ["verify_hmac", "redact_text", "sanitize_structure", "internal_implementation", "unknown_kb_reference", "unverified_action_claim"],
     },
 }
 
 FORBIDDEN_RUNTIME_PATTERNS = {
-    "kagura-engine.js": "Astera/Kagura engine runtime must not be invoked by Customer AI",
-    "CUSTOMER_AI_ASTERA_": "Astera runtime environment variables must not exist",
+    "kagura-engine.js": "Astera/Kagura runtime must not be invoked",
+    "CUSTOMER_AI_ASTERA_": "Astera runtime variables must not exist",
     "class AsteraBootstrap": "Astera bootstrap must not exist",
-    "self.model.generate": "Service must not directly call a model",
-    "self.engine.execute(packet)": "Only the ControlledExecutionCore may invoke the engine",
+    "class SkillRegistry": "generic skill registry is outside the focused conversation runtime",
+    "class RoutineBotSupervisor": "routine bot supervisor is outside the focused conversation runtime",
+    "class WorkerPool": "worker pool is unnecessary for lightweight string analysis",
+    "$customer-ai.": "generated structured-skill catalog is outside the focused conversation runtime",
+    "execution_contract": "large generic execution contracts are outside the focused conversation runtime",
 }
 
 
 def collect_text() -> str:
-    return "\n".join(path.read_text(encoding="utf-8") for path in ROOT.rglob("*") if path.is_file() and path.suffix in {".py", ".mjs", ".md", ".txt", ".toml", ".example"})
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in ROOT.rglob("*")
+        if path.is_file() and path.suffix in {".py", ".mjs", ".md", ".txt", ".toml", ".example"}
+    )
 
 
 def check_python_syntax() -> list[str]:
@@ -59,8 +62,6 @@ def check_forbidden_runtime() -> list[str]:
                 continue
             text = path.read_text(encoding="utf-8")
             for pattern, reason in FORBIDDEN_RUNTIME_PATTERNS.items():
-                if pattern == "self.engine.execute(packet)" and path.name == "control.py":
-                    continue
                 if pattern in text:
                     errors.append(f"{path.relative_to(ROOT)}: {reason}: {pattern}")
     return errors
