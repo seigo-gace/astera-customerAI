@@ -1,0 +1,4 @@
+deploy_source=main
+migration_target=G-ACE/astera-customerAI
+bucket_target=G-ACE/astera-customerai-data
+requested_at=2026-07-28T21:00:00+09:00
