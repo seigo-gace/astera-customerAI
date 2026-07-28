@@ -16,8 +16,10 @@ def _int(name: str, default: int) -> int:
 class Settings:
     data_root: Path
     hmac_secret: str
-    gateway_callback_url: str
-    gateway_callback_secret: str
+    internal_event_api_url: str
+    internal_event_api_token: str
+    internal_event_source_id: str
+    internal_event_result_destination_id: str
     notion_token: str
     notion_data_source_id: str
     model_id: str
@@ -31,7 +33,7 @@ class Settings:
     session_lease_seconds: int
     max_input_chars: int
     process_concurrency: int
-    gateway_timeout_seconds: int
+    internal_event_api_timeout_seconds: int
     session_cache_ttl_seconds: int
     session_cache_max_sessions: int
     session_cache_max_turns: int
@@ -44,8 +46,12 @@ class Settings:
         return cls(
             data_root=root,
             hmac_secret=os.getenv("CUSTOMER_AI_HMAC_SECRET", ""),
-            gateway_callback_url=os.getenv("GATEWAY_CALLBACK_URL", ""),
-            gateway_callback_secret=os.getenv("GATEWAY_CALLBACK_SECRET", ""),
+            internal_event_api_url=os.getenv("INTERNAL_EVENT_API_URL", ""),
+            internal_event_api_token=os.getenv("INTERNAL_EVENT_API_TOKEN", ""),
+            internal_event_source_id=os.getenv("INTERNAL_EVENT_SOURCE_ID", "hf-private-runtime"),
+            internal_event_result_destination_id=os.getenv(
+                "INTERNAL_EVENT_RESULT_DESTINATION_ID", ""
+            ),
             notion_token=os.getenv("NOTION_TOKEN", ""),
             notion_data_source_id=os.getenv("NOTION_DATA_SOURCE_ID", ""),
             model_id=os.getenv("CUSTOMER_AI_MODEL_ID", "Qwen/Qwen3-4B-Instruct-2507"),
@@ -59,7 +65,7 @@ class Settings:
             session_lease_seconds=_int("CUSTOMER_AI_SESSION_LEASE_SECONDS", 90),
             max_input_chars=_int("CUSTOMER_AI_MAX_INPUT_CHARS", 20000),
             process_concurrency=_int("CUSTOMER_AI_PROCESS_CONCURRENCY", 2),
-            gateway_timeout_seconds=_int("CUSTOMER_AI_GATEWAY_TIMEOUT_SECONDS", 10),
+            internal_event_api_timeout_seconds=_int("INTERNAL_EVENT_API_TIMEOUT_SECONDS", 10),
             session_cache_ttl_seconds=_int("CUSTOMER_AI_SESSION_CACHE_TTL_SECONDS", 1800),
             session_cache_max_sessions=_int("CUSTOMER_AI_SESSION_CACHE_MAX_SESSIONS", 256),
             session_cache_max_turns=_int("CUSTOMER_AI_SESSION_CACHE_MAX_TURNS", 12),
