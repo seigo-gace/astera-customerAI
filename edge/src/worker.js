@@ -33,6 +33,15 @@ function isId(value, prefix) {
     && value.length <= 160;
 }
 
+function textSafeEqual(left, right) {
+  const a = new TextEncoder().encode(String(left));
+  const b = new TextEncoder().encode(String(right));
+  if (a.length !== b.length) return false;
+  let difference = 0;
+  for (let index = 0; index < a.length; index += 1) difference |= a[index] ^ b[index];
+  return difference === 0;
+}
+
 async function bodyJson(request, maxBytes = 32768) {
   const length = Number(request.headers.get("content-length") || 0);
   if (length > maxBytes) throw new Error("BODY_TOO_LARGE");
@@ -41,21 +50,37 @@ async function bodyJson(request, maxBytes = 32768) {
   return JSON.parse(text || "{}");
 }
 
+async function checkPublicRateLimit(request, env) {
+  if (!env.CUSTOMER_AI_RATE_LIMITER) return true;
+  const origin = request.headers.get("origin") || "unknown-origin";
+  const remoteIp = request.headers.get("cf-connecting-ip") || "unknown-client";
+  const result = await env.CUSTOMER_AI_RATE_LIMITER.limit({ key: `${origin}:${remoteIp}` });
+  return result.success === true;
+}
+
 async function verifyTurnstile(request, env, remoteIp) {
   if (!env.TURNSTILE_SECRET) return true;
   const token = request.headers.get("x-turnstile-token");
-  if (!token) return false;
+  if (!token || token.length > 2048) return false;
   const form = new FormData();
   form.set("secret", env.TURNSTILE_SECRET);
   form.set("response", token);
+  form.set("idempotency_key", crypto.randomUUID());
   if (remoteIp) form.set("remoteip", remoteIp);
   const response = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
     method: "POST",
-    body: form
+    body: form,
+    signal: AbortSignal.timeout(5000)
   });
   if (!response.ok) return false;
   const result = await response.json();
-  return result.success === true;
+  if (result.success !== true) return false;
+  const expectedAction = String(env.TURNSTILE_EXPECTED_ACTION || "").trim();
+  if (expectedAction && result.action !== expectedAction) return false;
+  const allowedHostnames = new Set(String(env.TURNSTILE_ALLOWED_HOSTNAMES || "")
+    .split(",").map((value) => value.trim()).filter(Boolean));
+  if (allowedHostnames.size && !allowedHostnames.has(String(result.hostname || ""))) return false;
+  return true;
 }
 
 function decodeSecret(secret) {
@@ -88,10 +113,16 @@ async function verifyStandardWebhook(request, rawBody, secret, toleranceSeconds 
   const signed = `${eventId}.${timestamp}.${rawBody}`;
   const digest = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signed));
   const expected = base64(digest);
-  return signature.split(/\s+/).some((candidate) => candidate === `v1,${expected}`);
+  return signature.split(/\s+/).some((candidate) => {
+    const [version, encoded] = candidate.split(",", 2);
+    return version === "v1" && Boolean(encoded) && textSafeEqual(encoded, expected);
+  });
 }
 
 async function submitMessage(request, env) {
+  if (!(await checkPublicRateLimit(request, env))) {
+    return json({ error: "rate_limited", retry_after_seconds: 60 }, 429, { "retry-after": "60" });
+  }
   const remoteIp = request.headers.get("cf-connecting-ip") || "";
   if (!(await verifyTurnstile(request, env, remoteIp))) {
     return json({ error: "turnstile_failed" }, 403);
