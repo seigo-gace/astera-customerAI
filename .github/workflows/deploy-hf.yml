@@ -1,25 +1,82 @@
-name: deploy-hf
+name: deploy-private-hf-runtime
 
 on:
   workflow_dispatch:
+    inputs:
+      enable_model:
+        description: Enable the optional lightweight model after deployment
+        required: true
+        default: '0'
+        type: choice
+        options: ['0', '1']
 
 permissions:
   contents: read
 
+concurrency:
+  group: deploy-private-hf-runtime
+  cancel-in-progress: false
+
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_NAMESPACE: G-ACE
+      HF_SPACE_NAME: astera-customerAI
+      HF_BUCKET_NAME: astera-customerai-data
+      HF_COMMIT_MESSAGE: Deploy GitHub main ${{ github.sha }}
+      CUSTOMER_AI_HMAC_SECRET: ${{ secrets.CUSTOMER_AI_HMAC_SECRET }}
+      INTERNAL_EVENT_API_URL: ${{ secrets.INTERNAL_EVENT_API_URL }}
+      INTERNAL_EVENT_API_TOKEN: ${{ secrets.INTERNAL_EVENT_API_TOKEN }}
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      NOTION_DATA_SOURCE_ID: ${{ secrets.NOTION_DATA_SOURCE_ID }}
+      CUSTOMER_AI_MODEL_ID: Qwen/Qwen3-4B-Instruct-2507
+      CUSTOMER_AI_MODEL_REVISION: cdbee75f17c01a7cc42f958dc650907174af0554
+      CUSTOMER_AI_ENABLE_MODEL: ${{ inputs.enable_model }}
+      INTERNAL_EVENT_SOURCE_ID: hf-private-runtime
+      INTERNAL_EVENT_RESULT_DESTINATION_ID: app-receiver
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - run: python -m pip install --upgrade pip 'huggingface_hub>=1.24.0'
-      - name: Provision private Space and bucket
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_NAMESPACE: G-ACE
-          HF_SPACE_NAME: astera-customerAI
-          HF_BUCKET_NAME: astera-customerai-data
-          HF_COMMIT_MESSAGE: Deploy GitHub commit ${{ github.sha }}
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+
+      - name: Refuse non-main deployment
+        run: test "${GITHUB_REF_NAME}" = "main"
+
+      - name: Install verification and deployment dependencies
+        run: |
+          python -m pip install --upgrade pip --quiet
+          pip install -r requirements-dev.txt --quiet
+          pip install --upgrade 'huggingface_hub>=1.24.0' 'httpx>=0.28,<1' --quiet
+
+      - name: Pre-deploy full verification
+        run: |
+          python scripts/review.py --all
+          ruff check . --select E9,F63,F7,F82
+          pytest -q
+          npm test
+          npm run check:edge
+          npm run test:edge
+
+      - name: Provision private Space and Bucket and deploy main
         run: python scripts/provision_hf.py
+
+      - name: Deployment summary
+        run: |
+          {
+            echo '## Private HF deployment'
+            echo '- Space: G-ACE/astera-customerAI'
+            echo '- Bucket: G-ACE/astera-customerai-data'
+            echo '- Mount: /data/customer-ai'
+            echo "- Model enabled: ${CUSTOMER_AI_ENABLE_MODEL}"
+            echo "- GitHub SHA: ${GITHUB_SHA}"
+          } >> "$GITHUB_STEP_SUMMARY"
