@@ -59,6 +59,19 @@ async function signStandardWebhook(rawBody, eventId, timestamp, secret) {
   return `v1,${encodedBase64(digest)}`;
 }
 
+function messageRequest(body = {}) {
+  return new Request('https://api.asterav8.jp/v1/customer-ai/messages', {
+    method: 'POST',
+    headers: {
+      origin: 'https://asterav8.jp',
+      'content-type': 'application/json',
+      'cf-connecting-ip': '203.0.113.10',
+      'x-turnstile-token': 'turnstile-token'
+    },
+    body: JSON.stringify({ message: 'Asteraの使い方は？', source: 'astera-hp', ...body })
+  });
+}
+
 test('health endpoint returns CORS only to approved website origins', async () => {
   const env = baseEnv();
   const allowed = await worker.fetch(new Request('https://api.asterav8.jp/healthz', {
@@ -86,14 +99,7 @@ test('message submission uses the generic internal API and creates bounded job s
   };
   t.after(() => { globalThis.fetch = originalFetch; });
 
-  const response = await worker.fetch(new Request('https://api.asterav8.jp/v1/customer-ai/messages', {
-    method: 'POST',
-    headers: {
-      origin: 'https://asterav8.jp',
-      'content-type': 'application/json'
-    },
-    body: JSON.stringify({ message: 'Asteraの使い方は？', source: 'astera-hp' })
-  }), env);
+  const response = await worker.fetch(messageRequest(), env);
 
   assert.equal(response.status, 202);
   const accepted = await response.json();
@@ -111,6 +117,48 @@ test('message submission uses the generic internal API and creates bounded job s
 
   const stored = await env.CUSTOMER_AI_RESULTS.get(accepted.job_id, 'json');
   assert.equal(stored.status, 'accepted');
+});
+
+test('public rate limiter rejects before Turnstile and gateway calls', async (t) => {
+  const env = baseEnv({
+    CUSTOMER_AI_RATE_LIMITER: { limit: async () => ({ success: false }) },
+    TURNSTILE_SECRET: 'turnstile-secret'
+  });
+  const originalFetch = globalThis.fetch;
+  let called = false;
+  globalThis.fetch = async () => {
+    called = true;
+    throw new Error('must not be called');
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const response = await worker.fetch(messageRequest(), env);
+  assert.equal(response.status, 429);
+  assert.equal(response.headers.get('retry-after'), '60');
+  assert.equal(called, false);
+});
+
+test('Turnstile action and hostname scope must match before gateway delivery', async (t) => {
+  const env = baseEnv({
+    TURNSTILE_SECRET: 'turnstile-secret',
+    TURNSTILE_EXPECTED_ACTION: 'customer_ai',
+    TURNSTILE_ALLOWED_HOSTNAMES: 'asterav8.jp,app.asterav8.jp'
+  });
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({
+      success: true,
+      action: 'wrong_action',
+      hostname: 'asterav8.jp'
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const response = await worker.fetch(messageRequest(), env);
+  assert.equal(response.status, 403);
+  assert.equal(calls, 1);
 });
 
 test('signed result callback is stored and returned by job polling', async () => {
