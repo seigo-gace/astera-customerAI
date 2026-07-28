@@ -9,10 +9,6 @@ on:
         default: '0'
         type: choice
         options: ['0', '1']
-  pull_request:
-    branches: [main]
-    paths:
-      - '.github/deploy-now'
 
 permissions:
   contents: read
@@ -38,7 +34,7 @@ jobs:
       NOTION_DATA_SOURCE_ID: ${{ secrets.NOTION_DATA_SOURCE_ID }}
       CUSTOMER_AI_MODEL_ID: Qwen/Qwen3-4B-Instruct-2507
       CUSTOMER_AI_MODEL_REVISION: cdbee75f17c01a7cc42f958dc650907174af0554
-      CUSTOMER_AI_ENABLE_MODEL: ${{ inputs.enable_model || '0' }}
+      CUSTOMER_AI_ENABLE_MODEL: ${{ inputs.enable_model }}
       INTERNAL_EVENT_SOURCE_ID: hf-private-runtime
       INTERNAL_EVENT_RESULT_DESTINATION_ID: app-receiver
     steps:
@@ -53,19 +49,8 @@ jobs:
         with:
           node-version: '22.16.0'
 
-      - name: Refuse non-main deployment source
-        run: test "$(git branch --show-current)" = "main"
-
-      - name: Return exact GitHub main clone as artifact
-        run: git archive --format=zip --output=astera-customerAI-main.zip HEAD
-
-      - name: Upload exact source archive
-        uses: actions/upload-artifact@v4
-        with:
-          name: astera-customerAI-main-source
-          path: astera-customerAI-main.zip
-          if-no-files-found: error
-          retention-days: 7
+      - name: Refuse non-main deployment
+        run: test "${GITHUB_REF_NAME}" = "main"
 
       - name: Install verification and deployment dependencies
         run: |
@@ -93,5 +78,5 @@ jobs:
             echo '- Bucket: G-ACE/astera-customerai-data'
             echo '- Mount: /data/customer-ai'
             echo "- Model enabled: ${CUSTOMER_AI_ENABLE_MODEL}"
-            echo "- GitHub source SHA: $(git rev-parse HEAD)"
+            echo "- GitHub SHA: ${GITHUB_SHA}"
           } >> "$GITHUB_STEP_SUMMARY"
