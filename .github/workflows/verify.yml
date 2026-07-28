@@ -65,6 +65,11 @@ jobs:
       - name: V8 runtime tests
         if: always()
         run: npm test
+      - name: Cloudflare edge syntax and contract tests
+        if: always()
+        run: |
+          npm run check:edge
+          npm run test:edge
 
       - name: Full Python regression suite
         if: always()
