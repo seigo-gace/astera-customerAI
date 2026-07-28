@@ -1,0 +1,22 @@
+name = "astera-customer-ai-edge"
+main = "src/worker.js"
+compatibility_date = "2026-07-28"
+workers_dev = false
+
+[vars]
+ALLOWED_ORIGINS = "https://asterav8.jp,https://www.asterav8.jp,https://app.asterav8.jp"
+CUSTOMER_AI_RUNTIME_DESTINATION_ID = "private-runtime"
+MAX_INPUT_BYTES = "32768"
+MAX_MESSAGE_CHARS = "20000"
+RESULT_TTL_SECONDS = "3600"
+
+[[kv_namespaces]]
+binding = "CUSTOMER_AI_RESULTS"
+id = "replace_with_production_kv_namespace_id"
+preview_id = "replace_with_preview_kv_namespace_id"
+
+# Configure these with `wrangler secret put` or the Cloudflare dashboard:
+# WEBHOOK_INTERNAL_API_URL
+# WEBHOOK_INTERNAL_API_TOKEN
+# RESULT_WEBHOOK_SECRET
+# TURNSTILE_SECRET
