@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -16,46 +15,48 @@ from .kb import KBIndex
 from .model import ConversationLanguageEngine
 from .notion import NotionClient
 from .schemas import CloudEvent, JobRecord, JobResult, MessagePayload
-from .security import canonical_json, redact_text, sanitize_structure, sign_standard_webhook, validate_identifier
+from .security import canonical_json, redact_text, sanitize_structure, validate_identifier
 from .storage import ConflictError, JobStore
 from .support import FeedbackStore
 from .v8 import V8Supervisor
 
 
-class GatewayClient:
+class InternalEventApiClient:
     def __init__(self, settings: Settings):
         self.settings = settings
 
     async def emit(self, event_type: str, subject: str, data: dict[str, Any]) -> None:
-        if not self.settings.gateway_callback_url or not self.settings.gateway_callback_secret:
+        if not (
+            self.settings.internal_event_api_url
+            and self.settings.internal_event_api_token
+            and self.settings.internal_event_result_destination_id
+        ):
             return
-        event = {
-            "specversion": "1.0",
-            "id": "evt_" + hashlib.sha256(f"{event_type}:{subject}:{canonical_json(data).hex()}".encode()).hexdigest()[:32],
-            "source": "customer-ai://hf-runtime",
-            "type": event_type,
+        sanitized = sanitize_structure(data)
+        event_id = "evt_" + hashlib.sha256(
+            f"{event_type}:{subject}:{canonical_json(sanitized).hex()}".encode()
+        ).hexdigest()[:32]
+        payload = {
+            "eventId": event_id,
+            "eventType": event_type,
+            "sourceId": self.settings.internal_event_source_id,
+            "destinationId": self.settings.internal_event_result_destination_id,
             "subject": subject,
             "time": datetime.now(UTC).isoformat(),
-            "datacontenttype": "application/json",
-            "data": sanitize_structure(data),
+            "data": sanitized,
         }
-        body = canonical_json(event)
-        timestamp = str(int(time.time()))
-        event_id = str(event["id"])
         headers = {
-            "content-type": "application/cloudevents+json",
-            "webhook-id": event_id,
-            "webhook-timestamp": timestamp,
-            "webhook-signature": sign_standard_webhook(
-                body,
-                event_id,
-                timestamp,
-                self.settings.gateway_callback_secret,
-            ),
-            "webhook-event": event_type,
+            "authorization": f"Bearer {self.settings.internal_event_api_token}",
+            "content-type": "application/json",
         }
-        async with httpx.AsyncClient(timeout=self.settings.gateway_timeout_seconds) as client:
-            response = await client.post(self.settings.gateway_callback_url, content=body, headers=headers)
+        async with httpx.AsyncClient(
+            timeout=self.settings.internal_event_api_timeout_seconds
+        ) as client:
+            response = await client.post(
+                self.settings.internal_event_api_url,
+                json=payload,
+                headers=headers,
+            )
             response.raise_for_status()
 
 
@@ -85,8 +86,10 @@ class CustomerAIService:
             search=self.kb.search,
             feedback_store=self.feedback,
         )
-        self.gateway = GatewayClient(self.settings)
-        self.notion = NotionClient(self.settings.notion_token, self.settings.notion_data_source_id)
+        self.events = InternalEventApiClient(self.settings)
+        self.notion = NotionClient(
+            self.settings.notion_token, self.settings.notion_data_source_id
+        )
         self._process_semaphore = asyncio.Semaphore(self.settings.process_concurrency)
 
     async def startup(self) -> None:
@@ -101,10 +104,18 @@ class CustomerAIService:
 
     async def sync_notion_kb(self, version: str) -> dict[str, Any]:
         pages = await self.notion.fetch_pages()
-        info = await asyncio.to_thread(self.kb.build_snapshot, version=version, pages=pages)
+        info = await asyncio.to_thread(
+            self.kb.build_snapshot, version=version, pages=pages
+        )
         self.kb.open()
-        result = {"version": info.version, "path": str(info.path), "source_pages": len(pages)}
-        await self.gateway.emit("customer.ai.kb.update.applied", f"kb/{version}", result)
+        result = {
+            "version": info.version,
+            "path": str(info.path),
+            "source_pages": len(pages),
+        }
+        await self.events.emit(
+            "customer.ai.kb.update.applied", f"kb/{version}", result
+        )
         return result
 
     async def recover_once(self) -> dict[str, Any]:
@@ -112,11 +123,16 @@ class CustomerAIService:
         now = datetime.now(UTC)
         for status_path in self.settings.data_root.glob("jobs/*/*/status.json"):
             try:
-                record = JobRecord.model_validate_json(status_path.read_text(encoding="utf-8"))
+                record = JobRecord.model_validate_json(
+                    status_path.read_text(encoding="utf-8")
+                )
             except Exception:
                 continue
             age = (now - record.updated_at).total_seconds()
-            should_requeue = record.status in {"accepted", "queued_processing", "retrying"} and age > 60
+            should_requeue = (
+                record.status in {"accepted", "queued_processing", "retrying"}
+                and age > 60
+            )
             if record.status == "processing":
                 lease_path = status_path.parent / "lease.json"
                 if not lease_path.exists():
@@ -129,8 +145,14 @@ class CustomerAIService:
                         should_requeue = True
             if not should_requeue:
                 continue
-            self.jobs.update_job(record.job_id, status="retrying", stage="recovery_requeue")
-            await self.gateway.emit("customer.ai.job.requeue.requested", f"job/{record.job_id}", {"job_id": record.job_id})
+            self.jobs.update_job(
+                record.job_id, status="retrying", stage="recovery_requeue"
+            )
+            await self.events.emit(
+                "customer.ai.job.requeue.requested",
+                f"job/{record.job_id}",
+                {"job_id": record.job_id},
+            )
             recovered.append(record.job_id)
         return {"recovered": recovered, "count": len(recovered)}
 
@@ -143,13 +165,22 @@ class CustomerAIService:
         redacted = redact_text(payload.message)
         payload = payload.model_copy(update={"message": redacted.text})
         validate_identifier(event.id, field="event_id")
-        job_id = str(event.data.get("job_id") or "job_" + hashlib.sha256(event.id.encode()).hexdigest()[:32])
+        job_id = str(
+            event.data.get("job_id")
+            or "job_" + hashlib.sha256(event.id.encode()).hexdigest()[:32]
+        )
         validate_identifier(job_id, field="job_id")
-        record, created = self.jobs.accept(job_id=job_id, event_id=event.id, payload=payload)
-        await self.gateway.emit(
+        record, created = self.jobs.accept(
+            job_id=job_id, event_id=event.id, payload=payload
+        )
+        await self.events.emit(
             "customer.ai.job.accepted",
             f"job/{job_id}",
-            {"job_id": job_id, "created": created, "redaction_kinds": redacted.kinds},
+            {
+                "job_id": job_id,
+                "created": created,
+                "redaction_kinds": redacted.kinds,
+            },
         )
         return record.model_dump(mode="json"), created
 
@@ -158,25 +189,45 @@ class CustomerAIService:
         if existing:
             return existing
         async with self._process_semaphore:
-            with self.jobs.store.lease(self.jobs.job_dir(job_id) / "lease.json", f"processor:{job_id}", self.settings.job_lease_seconds):
+            with self.jobs.store.lease(
+                self.jobs.job_dir(job_id) / "lease.json",
+                f"processor:{job_id}",
+                self.settings.job_lease_seconds,
+            ):
                 existing = self.jobs.get_result(job_id)
                 if existing:
                     return existing
                 request = self.jobs.get_request(job_id)
-                self.jobs.update_job(job_id, status="processing", stage="support_preparation")
-                session_lease_path = self.jobs.sessions_root / request.session_id / "lease.json"
+                self.jobs.update_job(
+                    job_id, status="processing", stage="support_preparation"
+                )
+                session_lease_path = (
+                    self.jobs.sessions_root / request.session_id / "lease.json"
+                )
                 try:
-                    with self.jobs.store.lease(session_lease_path, job_id, self.settings.session_lease_seconds):
+                    with self.jobs.store.lease(
+                        session_lease_path,
+                        job_id,
+                        self.settings.session_lease_seconds,
+                    ):
                         result = await self._run_pipeline(job_id, request)
                 except ConflictError:
-                    self.jobs.update_job(job_id, status="retrying", stage="session_busy")
+                    self.jobs.update_job(
+                        job_id, status="retrying", stage="session_busy"
+                    )
                     return {"job_id": job_id, "status": "retrying", "retry_after": 2}
                 self.jobs.save_result(job_id, result)
-                self.jobs.update_job(job_id, status=result["status"], stage=result["status"])
-                await self.gateway.emit("customer.ai.response.completed", f"job/{job_id}", result)
+                self.jobs.update_job(
+                    job_id, status=result["status"], stage=result["status"]
+                )
+                await self.events.emit(
+                    "customer.ai.response.completed", f"job/{job_id}", result
+                )
                 return result
 
-    async def _run_pipeline(self, job_id: str, request: MessagePayload) -> dict[str, Any]:
+    async def _run_pipeline(
+        self, job_id: str, request: MessagePayload
+    ) -> dict[str, Any]:
         outcome = await self.core.execute(request=request)
         return JobResult(
             job_id=job_id,
@@ -201,7 +252,8 @@ class CustomerAIService:
 
     def readiness(self) -> dict[str, Any]:
         return {
-            "data_root": self.settings.data_root.exists() and os_access(self.settings.data_root),
+            "data_root": self.settings.data_root.exists()
+            and os_access(self.settings.data_root),
             "v8": bool(self.v8.process and self.v8.process.returncode is None),
             "kb": self.kb.current() is not None,
             "model_enabled": self.settings.enable_model,
@@ -209,6 +261,15 @@ class CustomerAIService:
             "conversation_cache": self.conversations.status(),
             "kb_cache": self.kb.cache_status(),
             "feedback_store": self.feedback.root.exists(),
+            "internal_event_api": {
+                "configured": bool(
+                    self.settings.internal_event_api_url
+                    and self.settings.internal_event_api_token
+                    and self.settings.internal_event_result_destination_id
+                ),
+                "source_id": self.settings.internal_event_source_id,
+                "result_destination_id": self.settings.internal_event_result_destination_id,
+            },
             "support_pipeline": "astera-derived-document-task-search-evidence-blueprint",
         }
 

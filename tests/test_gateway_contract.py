@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from runtime.config import Settings
-from runtime.security import verify_standard_webhook
-from runtime.service import GatewayClient
+from runtime.service import InternalEventApiClient
 
 
 class FakeResponse:
@@ -26,10 +23,10 @@ class FakeAsyncClient:
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
-    async def post(self, url: str, *, content: bytes, headers: dict[str, str]):
+    async def post(self, url: str, *, json: dict, headers: dict[str, str]):
         self.__class__.captured = {
             "url": url,
-            "content": content,
+            "json": json,
             "headers": headers,
             "timeout": self.timeout,
         }
@@ -37,13 +34,17 @@ class FakeAsyncClient:
 
 
 @pytest.mark.asyncio
-async def test_gateway_callback_uses_standard_webhooks(data_root, monkeypatch):
-    monkeypatch.setenv("GATEWAY_CALLBACK_URL", "https://gateway.example.test/ingress/customer-ai-result")
-    monkeypatch.setenv("GATEWAY_CALLBACK_SECRET", "base64:Y3VzdG9tZXItYWktcmVzdWx0LXNlY3JldA==")
+async def test_result_callback_uses_generic_internal_event_api(data_root, monkeypatch):
+    monkeypatch.setenv(
+        "INTERNAL_EVENT_API_URL", "https://gateway.example.test/internal/events"
+    )
+    monkeypatch.setenv("INTERNAL_EVENT_API_TOKEN", "internal-api-token")
+    monkeypatch.setenv("INTERNAL_EVENT_SOURCE_ID", "hf-private-runtime")
+    monkeypatch.setenv("INTERNAL_EVENT_RESULT_DESTINATION_ID", "app-receiver")
     monkeypatch.setattr("runtime.service.httpx.AsyncClient", FakeAsyncClient)
 
     settings = Settings.load()
-    client = GatewayClient(settings)
+    client = InternalEventApiClient(settings)
     await client.emit(
         "customer.ai.response.completed",
         "job/job_12345678",
@@ -52,17 +53,13 @@ async def test_gateway_callback_uses_standard_webhooks(data_root, monkeypatch):
 
     captured = FakeAsyncClient.captured
     headers = captured["headers"]
-    assert captured["url"].endswith("/ingress/customer-ai-result")
-    assert headers["content-type"] == "application/cloudevents+json"
-    assert headers["webhook-event"] == "customer.ai.response.completed"
-    assert verify_standard_webhook(
-        captured["content"],
-        headers["webhook-id"],
-        headers["webhook-timestamp"],
-        headers["webhook-signature"],
-        settings.gateway_callback_secret,
-    )
-    event = json.loads(captured["content"])
-    assert event["source"] == "customer-ai://hf-runtime"
-    assert event["type"] == "customer.ai.response.completed"
-    assert event["subject"] == "job/job_12345678"
+    payload = captured["json"]
+    assert captured["url"].endswith("/internal/events")
+    assert headers["content-type"] == "application/json"
+    assert headers["authorization"] == "Bearer internal-api-token"
+    assert payload["sourceId"] == "hf-private-runtime"
+    assert payload["destinationId"] == "app-receiver"
+    assert payload["eventType"] == "customer.ai.response.completed"
+    assert payload["subject"] == "job/job_12345678"
+    assert payload["data"]["answer"] == "ok"
+    assert payload["eventId"].startswith("evt_")
