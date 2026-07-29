@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,8 @@ from .security import canonical_json, redact_text, sanitize_structure, validate_
 from .storage import ConflictError, JobStore
 from .support import FeedbackStore
 from .v8 import V8Supervisor
+
+LOGGER = logging.getLogger(__name__)
 
 
 class InternalEventApiClient:
@@ -91,12 +94,20 @@ class CustomerAIService:
             self.settings.notion_token, self.settings.notion_data_source_id
         )
         self._process_semaphore = asyncio.Semaphore(self.settings.process_concurrency)
+        self._v8_startup_error = ""
 
     async def startup(self) -> None:
         try:
             await self.v8.start()
-        except Exception:
-            pass
+            self._v8_startup_error = ""
+            LOGGER.info(
+                "CUSTOMER_AI_V8_READY node=%s socket=%s",
+                self.v8.node_binary,
+                self.v8.socket_path,
+            )
+        except Exception as error:
+            self._v8_startup_error = f"{type(error).__name__}:{error}"
+            LOGGER.exception("CUSTOMER_AI_V8_STARTUP_FAILED")
         self.kb.open()
 
     async def shutdown(self) -> None:
@@ -255,6 +266,7 @@ class CustomerAIService:
             "data_root": self.settings.data_root.exists()
             and os_access(self.settings.data_root),
             "v8": bool(self.v8.process and self.v8.process.returncode is None),
+            "v8_startup_error": self._v8_startup_error,
             "kb": self.kb.current() is not None,
             "model_enabled": self.settings.enable_model,
             "model_revision_pinned": bool(self.settings.model_revision),
