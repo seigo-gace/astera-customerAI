@@ -76,7 +76,7 @@ jobs:
         run: python scripts/provision_hf.py
 
       - name: Synchronize completed KB and run live story tests
-        run: python scripts/live_story_test.py
+        run: python scripts/run_live_story_suite.py
 
       - name: Upload live story evidence
         if: always()
