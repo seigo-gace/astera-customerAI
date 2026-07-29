@@ -41,7 +41,10 @@ def gateway_signed_headers(
         "webhook-id": webhook_id,
         "webhook-timestamp": timestamp,
         "webhook-signature": sign_standard_webhook(
-            body, webhook_id, timestamp, secret
+            body,
+            webhook_id,
+            timestamp,
+            secret,
         ),
         "webhook-event": event_type,
         "x-gace-destination": "customer-ai-hf",
@@ -72,7 +75,8 @@ def event(*, index: int, session_id: str, message: str) -> dict:
 
 
 def test_operational_signed_ingress_processing_persistence_and_follow_up(
-    data_root, monkeypatch
+    data_root,
+    monkeypatch,
 ):
     del monkeypatch
     import app as app_module
@@ -85,16 +89,22 @@ def test_operational_signed_ingress_processing_persistence_and_follow_up(
         message="購入したクレジットが反映されません",
     )
     first_body = canonical_json(first_event)
-    sync_body = canonical_json({"version": "operational-v2", "pages": story_pages()})
+    sync_body = canonical_json(
+        {"version": "operational-v2", "pages": story_pages()}
+    )
 
     with TestClient(app_module.app) as client:
         health = client.get("/healthz")
-        ready = client.get("/readyz")
+        ready_before_sync = client.get("/readyz")
         assert health.status_code == 200
         assert health.json() == {"status": "ok"}
-        assert ready.status_code == 200
-        assert ready.json()["checks"]["v8"] is True
-        assert ready.json()["checks"]["support_pipeline"] == PIPELINE_NAME
+        assert ready_before_sync.status_code == 503
+        assert ready_before_sync.json()["checks"]["v8"] is True
+        assert ready_before_sync.json()["checks"]["kb"] is False
+        assert (
+            ready_before_sync.json()["checks"]["support_pipeline"]
+            == PIPELINE_NAME
+        )
 
         bad_sync = client.post(
             "/internal/kb/sync",
@@ -110,6 +120,11 @@ def test_operational_signed_ingress_processing_persistence_and_follow_up(
         )
         assert synced.status_code == 202
         assert synced.json()["source_pages"] == len(story_pages())
+
+        ready_after_sync = client.get("/readyz")
+        assert ready_after_sync.status_code == 200
+        assert ready_after_sync.json()["ready"] is True
+        assert ready_after_sync.json()["checks"]["kb"] is True
 
         bad_accept = client.post(
             "/internal/customer-ai/accept",
@@ -131,13 +146,28 @@ def test_operational_signed_ingress_processing_persistence_and_follow_up(
             "/internal/customer-ai/accept",
             content=first_body,
             headers=gateway_signed_headers(
-                first_body, webhook_id="wh_customer_ai_delivery_0002"
+                first_body,
+                webhook_id="wh_customer_ai_delivery_0002",
             ),
         )
         assert duplicate.status_code == 202
         assert duplicate.json()["created"] is False
 
-        processing_result = client.portal.call(app_module.service.process_job, job_id)
+        unsigned_process = client.post(
+            f"/internal/customer-ai/jobs/{job_id}/process",
+            content=b"{}",
+            headers={"content-type": "application/json"},
+        )
+        assert unsigned_process.status_code == 401
+
+        process_body = b"{}"
+        processed = client.post(
+            f"/internal/customer-ai/jobs/{job_id}/process",
+            content=process_body,
+            headers=internal_signed_headers(process_body),
+        )
+        assert processed.status_code == 200
+        processing_result = processed.json()
         assert processing_result["status"] == "completed"
         assert "決済状態" in processing_result["answer"]
         assert processing_result["execution"]["pipeline"] == PIPELINE_NAME
@@ -147,10 +177,17 @@ def test_operational_signed_ingress_processing_persistence_and_follow_up(
         assert stored.json()["job"]["status"] == "completed"
         assert stored.json()["result"]["answer"] == processing_result["answer"]
 
-        repeated_process = client.portal.call(app_module.service.process_job, job_id)
-        assert repeated_process == stored.json()["result"]
+        repeated_process = client.post(
+            f"/internal/customer-ai/jobs/{job_id}/process",
+            content=process_body,
+            headers=internal_signed_headers(process_body),
+        )
+        assert repeated_process.status_code == 200
+        assert repeated_process.json() == stored.json()["result"]
 
-        unknown = client.get("/internal/customer-ai/jobs/job_operational_missing")
+        unknown = client.get(
+            "/internal/customer-ai/jobs/job_operational_missing"
+        )
         assert unknown.status_code == 404
 
     app_module = importlib.reload(app_module)
@@ -162,6 +199,10 @@ def test_operational_signed_ingress_processing_persistence_and_follow_up(
     follow_up_body = canonical_json(follow_up_event)
 
     with TestClient(app_module.app) as restarted_client:
+        restarted_ready = restarted_client.get("/readyz")
+        assert restarted_ready.status_code == 200
+        assert restarted_ready.json()["checks"]["kb"] is True
+
         restored = restarted_client.get(
             f"/internal/customer-ai/jobs/{first_event['data']['job_id']}"
         )
@@ -178,10 +219,17 @@ def test_operational_signed_ingress_processing_persistence_and_follow_up(
         )
         assert accepted_follow_up.status_code == 202
 
-        follow_up_result = restarted_client.portal.call(
-            app_module.service.process_job,
-            follow_up_event["data"]["job_id"],
+        follow_up_process_body = b"{}"
+        follow_up_processed = restarted_client.post(
+            (
+                "/internal/customer-ai/jobs/"
+                f"{follow_up_event['data']['job_id']}/process"
+            ),
+            content=follow_up_process_body,
+            headers=internal_signed_headers(follow_up_process_body),
         )
+        assert follow_up_processed.status_code == 200
+        follow_up_result = follow_up_processed.json()
         assert follow_up_result["status"] == "completed"
         assert follow_up_result["context_used"] is True
         assert "購入時刻" in follow_up_result["answer"]

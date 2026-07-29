@@ -23,7 +23,7 @@ SPACE_ID = f"{NAMESPACE}/{SPACE_NAME}"
 BUCKET_ID = f"{NAMESPACE}/{BUCKET_NAME}"
 MODEL_REVISION = os.environ.get(
     "CUSTOMER_AI_MODEL_REVISION",
-    "cdbee75f17c01a7cc42f958dc650907174af0554",
+    "c1899de289a04d12100db370d81485cdf75e47ca",
 )
 
 RUNTIME_SECRETS = (
@@ -50,9 +50,7 @@ def runtime_environment() -> dict[str, str]:
             missing.append(name)
 
     if missing:
-        # upload_folder and Space configuration do not delete existing HF secrets.
-        # Missing GitHub secrets are therefore left untouched so an existing Space
-        # can retain its current runtime credentials during a code-only deployment.
+        # Upload and Space configuration do not delete existing HF secrets.
         print("HF_RUNTIME_SECRETS_PRESERVED=" + ",".join(missing))
     return values
 
@@ -65,12 +63,18 @@ def verify_bucket(api: HfApi) -> None:
         },
         sort_keys=True,
     ).encode("utf-8")
-    probe_path = f"runtime-verification/deploy-{os.environ.get('GITHUB_RUN_ID', 'manual')}.json"
+    probe_path = (
+        "runtime-verification/deploy-"
+        f"{os.environ.get('GITHUB_RUN_ID', 'manual')}.json"
+    )
     with tempfile.TemporaryDirectory(prefix="hf-customer-ai-") as temporary:
         downloaded = Path(temporary) / "probe.json"
         try:
             api.batch_bucket_files(BUCKET_ID, add=[(payload, probe_path)])
-            api.download_bucket_files(BUCKET_ID, files=[(probe_path, str(downloaded))])
+            api.download_bucket_files(
+                BUCKET_ID,
+                files=[(probe_path, str(downloaded))],
+            )
             if downloaded.read_bytes() != payload:
                 raise RuntimeError("HF_BUCKET_READ_AFTER_WRITE_MISMATCH")
             print("HF_BUCKET_WRITE_READ_OK")
@@ -90,11 +94,11 @@ def dump_space_logs(api: HfApi) -> None:
         print(f"HF_SPACE_{label}_LOG_END")
 
 
-def wait_for_space(api: HfApi) -> None:
+def wait_for_space_health(api: HfApi) -> None:
     last = ""
     last_stage = ""
     headers = {"Authorization": f"Bearer {TOKEN}"}
-    for attempt in range(30):
+    for attempt in range(40):
         runtime = api.get_space_runtime(SPACE_ID)
         stage = str(runtime.stage)
         stage_upper = stage.upper()
@@ -105,10 +109,8 @@ def wait_for_space(api: HfApi) -> None:
             dump_space_logs(api)
             raise RuntimeError(f"HF_SPACE_TERMINAL_STAGE:{stage}")
 
-        # During RUNNING_BUILDING or APP_STARTING, HF can still serve the previous
-        # container. Never accept health/readiness from that stale runtime.
         if stage_upper != "RUNNING":
-            if attempt == 29:
+            if attempt == 39:
                 break
             time.sleep(20)
             continue
@@ -121,7 +123,6 @@ def wait_for_space(api: HfApi) -> None:
             raise RuntimeError("HF_SPACE_NOT_PRIVATE")
         if info.subdomain:
             health_url = f"https://{info.subdomain}.hf.space/healthz"
-            ready_url = f"https://{info.subdomain}.hf.space/readyz"
             try:
                 response = httpx.get(
                     health_url,
@@ -130,28 +131,16 @@ def wait_for_space(api: HfApi) -> None:
                     follow_redirects=True,
                 )
                 last = f"{response.status_code}:{response.text[:300]}"
-                if response.status_code == 200 and response.json().get("status") == "ok":
+                if (
+                    response.status_code == 200
+                    and response.json().get("status") == "ok"
+                ):
                     print("HF_SPACE_HEALTH_OK")
-                    ready = httpx.get(
-                        ready_url,
-                        headers=headers,
-                        timeout=30,
-                        follow_redirects=True,
-                    )
-                    print(f"HF_SPACE_READY_STATUS={ready.status_code}")
-                    print(ready.text[:2000])
-                    if ready.status_code != 200:
-                        dump_space_logs(api)
-                        raise RuntimeError(
-                            f"HF_SPACE_READY_FAILED:{ready.status_code}:{ready.text[:500]}"
-                        )
-                    print("HF_PRIVATE_RUNTIME_DEPLOYED")
+                    print("HF_PRIVATE_RUNTIME_STARTED")
                     return
-            except RuntimeError:
-                raise
             except Exception as error:  # cold-start transition
                 last = repr(error)
-        if attempt == 29:
+        if attempt == 39:
             break
         time.sleep(20)
     dump_space_logs(api)
@@ -162,7 +151,10 @@ def main() -> None:
     runtime_secrets = runtime_environment()
     api = HfApi(token=TOKEN)
     identity = api.whoami()
-    print(f"HF_AUTHENTICATED_AS={identity.get('name') or identity.get('fullname')}")
+    print(
+        "HF_AUTHENTICATED_AS="
+        f"{identity.get('name') or identity.get('fullname')}"
+    )
 
     bucket = api.create_bucket(BUCKET_ID, private=True, exist_ok=True)
     if not bucket:
@@ -183,7 +175,11 @@ def main() -> None:
         space_sdk="gradio",
         space_volumes=[volume],
     )
-    api.update_repo_settings(repo_id=SPACE_ID, repo_type="space", private=True)
+    api.update_repo_settings(
+        repo_id=SPACE_ID,
+        repo_type="space",
+        private=True,
+    )
     api.set_space_volumes(SPACE_ID, volumes=[volume])
     print(f"HF_PRIVATE_SPACE_READY={SPACE_ID}")
     print("HF_BUCKET_MOUNT=/data/customer-ai")
@@ -194,11 +190,15 @@ def main() -> None:
     variables = {
         "CUSTOMER_AI_DATA_ROOT": "/data/customer-ai",
         "CUSTOMER_AI_MODEL_ID": os.environ.get(
-            "CUSTOMER_AI_MODEL_ID", "Qwen/Qwen3-4B-Instruct-2507"
+            "CUSTOMER_AI_MODEL_ID",
+            "Qwen/Qwen3-0.6B",
         ),
         "CUSTOMER_AI_MODEL_REVISION": MODEL_REVISION,
-        "CUSTOMER_AI_ENABLE_MODEL": os.environ.get("CUSTOMER_AI_ENABLE_MODEL", "0"),
-        "CUSTOMER_AI_GPU_DAILY_BUDGET_SECONDS": "2100",
+        "CUSTOMER_AI_ENABLE_MODEL": os.environ.get(
+            "CUSTOMER_AI_ENABLE_MODEL",
+            "1",
+        ),
+        "CUSTOMER_AI_GPU_DAILY_BUDGET_SECONDS": "3600",
         "CUSTOMER_AI_NODE_BINARY": "node",
         "CUSTOMER_AI_NODE_SOCKET": "/tmp/customer-ai-v8.sock",
         "CUSTOMER_AI_NODE_MEMORY_MB": "384",
@@ -206,12 +206,14 @@ def main() -> None:
         "CUSTOMER_AI_SESSION_CACHE_MAX_SESSIONS": "256",
         "CUSTOMER_AI_SESSION_CACHE_MAX_TURNS": "12",
         "CUSTOMER_AI_KB_CACHE_TTL_SECONDS": "120",
-        "CUSTOMER_AI_KB_CACHE_MAX_ENTRIES": "256",
+        "CUSTOMER_AI_KB_CACHE_MAX_ENTRIES": "512",
         "INTERNAL_EVENT_SOURCE_ID": os.environ.get(
-            "INTERNAL_EVENT_SOURCE_ID", "hf-private-runtime"
+            "INTERNAL_EVENT_SOURCE_ID",
+            "hf-private-runtime",
         ),
         "INTERNAL_EVENT_RESULT_DESTINATION_ID": os.environ.get(
-            "INTERNAL_EVENT_RESULT_DESTINATION_ID", "app-receiver"
+            "INTERNAL_EVENT_RESULT_DESTINATION_ID",
+            "app-receiver",
         ),
         "DEPLOYED_GITHUB_COMMIT": os.environ.get("GITHUB_SHA", "manual"),
     }
@@ -219,13 +221,16 @@ def main() -> None:
         api.add_space_variable(SPACE_ID, key=key, value=value)
     print(f"HF_SPACE_SECRETS_CONFIGURED={len(runtime_secrets)}")
     print(f"HF_SPACE_VARIABLES_CONFIGURED={len(variables)}")
+    print(f"HF_FREE_LOCAL_MODEL={variables['CUSTOMER_AI_MODEL_ID']}")
+    print(f"HF_FREE_LOCAL_MODEL_REVISION={MODEL_REVISION}")
 
     api.upload_folder(
         repo_id=SPACE_ID,
         repo_type="space",
         folder_path=str(ROOT),
         commit_message=os.environ.get(
-            "HF_COMMIT_MESSAGE", "Deploy Customer AI from GitHub main"
+            "HF_COMMIT_MESSAGE",
+            "Deploy Customer AI from GitHub main",
         ),
         ignore_patterns=[
             ".git/**",
@@ -246,7 +251,7 @@ def main() -> None:
     print("HF_SPACE_UPLOAD_COMPLETE")
 
     verify_bucket(api)
-    wait_for_space(api)
+    wait_for_space_health(api)
 
 
 if __name__ == "__main__":
