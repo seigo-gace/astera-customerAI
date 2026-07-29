@@ -6,8 +6,8 @@
   "score_percent": 0.0,
   "free_model_invoked": false,
   "failure_stage": "before_live_story_report",
-  "workflow_status": "failure",
-  "workflow_run_id": "30438290478",
-  "workflow_sha": "1671475941a91fd25a5fef4deca6d6492e204e3d",
-  "evidence_persisted_at": "2026-07-29T09:11:31.436192+00:00"
+  "workflow_status": "cancelled",
+  "workflow_run_id": "30439169739",
+  "workflow_sha": "c91796bb2515e72c5ede8309bbddbb8daafcfa25",
+  "evidence_persisted_at": "2026-07-29T09:23:18.229273+00:00"
 }
