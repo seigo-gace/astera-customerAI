@@ -1,0 +1,13 @@
+{
+  "accepted": false,
+  "total": 0,
+  "passed": 0,
+  "failed": 0,
+  "score_percent": 0.0,
+  "free_model_invoked": false,
+  "failure_stage": "before_hp_public_live_story_report",
+  "workflow_status": "failure",
+  "workflow_run_id": "30454304775",
+  "workflow_sha": "5532a4ca5b8bc3ecdd0cc53b12a396ead042dea1",
+  "evidence_persisted_at": "2026-07-29T13:08:33.312209+00:00"
+}
