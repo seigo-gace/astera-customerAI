@@ -1,7 +1,10 @@
-customerai-master-v2-completed-kb
-customerai-index-v2-effective-all-records
+customerai-master-v2-hp-public-ai-v2
+customerai-index-v2-hp-public-ai-v2
 free-local-model=Qwen/Qwen3-0.6B
-live-story-suite=100
-trigger=2026-07-29T18:23:00+09:00
-evidence=deployment-evidence/live-story-latest.json
+baseline-live-story-suite=100
+hp-public-live-story-suite=100
+total-live-story-cases=200
+hp-public-source-sha256=8c2de4259b00a4c64dc175bb76ed7187387db1c127e2f3de66fc21278490d8f5
+trigger=2026-07-29T21:25:44+09:00
+evidence=deployment-evidence/live-story-latest.json,deployment-evidence/hp-public-story-latest.json
 mode=private-space-internal-signed-routes
