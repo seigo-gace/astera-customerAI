@@ -29,7 +29,8 @@ def _bundle_paths() -> list[Path]:
     if configured:
         candidate = Path(configured)
         if candidate.exists():
-            return [candidate]
+            sibling = candidate.with_name("bundled-hp-public-boundary-v2.json")
+            return [candidate, sibling] if sibling.exists() else [candidate]
     root = Path(__file__).resolve().parents[1] / "kb"
     return [root / name for name in DEFAULT_BUNDLE_NAMES]
 
