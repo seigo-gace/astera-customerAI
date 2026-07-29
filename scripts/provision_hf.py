@@ -4,8 +4,10 @@
 # ///
 from __future__ import annotations
 
+import base64
 import json
 import os
+import secrets
 import tempfile
 import time
 from pathlib import Path
@@ -49,10 +51,41 @@ def runtime_environment() -> dict[str, str]:
         else:
             missing.append(name)
 
+    if "CUSTOMER_AI_HMAC_SECRET" not in values:
+        generated = base64.b64encode(secrets.token_bytes(48)).decode("ascii")
+        values["CUSTOMER_AI_HMAC_SECRET"] = "base64:" + generated
+        print("HF_RUNTIME_HMAC_SECRET_BOOTSTRAPPED=true")
+        missing = [name for name in missing if name != "CUSTOMER_AI_HMAC_SECRET"]
+
     if missing:
         # Upload and Space configuration do not delete existing HF secrets.
         print("HF_RUNTIME_SECRETS_PRESERVED=" + ",".join(missing))
     return values
+
+
+def inspect_persisted_snapshot(api: HfApi) -> None:
+    with tempfile.TemporaryDirectory(prefix="hf-kb-manifest-") as temporary:
+        local = Path(temporary) / "manifest.json"
+        api.download_bucket_files(
+            BUCKET_ID,
+            files=[("kb/manifest.json", local)],
+            raise_on_missing_files=False,
+        )
+        if not local.exists():
+            print("HF_PERSISTED_KB_MANIFEST=missing")
+            return
+        try:
+            manifest = json.loads(local.read_text(encoding="utf-8"))
+        except Exception as error:
+            print(f"HF_PERSISTED_KB_MANIFEST=invalid:{type(error).__name__}")
+            return
+        safe = {
+            "version": manifest.get("version"),
+            "page_count": manifest.get("page_count"),
+            "index_count": manifest.get("index_count"),
+            "schema_version": manifest.get("schema_version"),
+        }
+        print("HF_PERSISTED_KB_MANIFEST=" + json.dumps(safe, sort_keys=True))
 
 
 def verify_bucket(api: HfApi) -> None:
@@ -160,6 +193,7 @@ def main() -> None:
     if not bucket:
         raise RuntimeError("HF_BUCKET_CREATE_FAILED")
     print(f"HF_PRIVATE_BUCKET_READY={BUCKET_ID}")
+    inspect_persisted_snapshot(api)
 
     volume = Volume(
         type="bucket",
