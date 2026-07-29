@@ -34,9 +34,11 @@ jobs:
       CUSTOMER_AI_HMAC_SECRET: ${{ secrets.CUSTOMER_AI_HMAC_SECRET }}
       INTERNAL_EVENT_API_URL: ${{ secrets.INTERNAL_EVENT_API_URL }}
       INTERNAL_EVENT_API_TOKEN: ${{ secrets.INTERNAL_EVENT_API_TOKEN }}
-      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN || 'bundled:hp-public-v2' }}
+      FULL_NOTION_SYNC_AVAILABLE: ${{ secrets.NOTION_TOKEN != '' }}
       NOTION_DATA_SOURCE_ID: d4003654-ce9a-43cb-8cb6-20401d179580
       NOTION_INDEX_DATA_SOURCE_ID: 014f4a72-e01f-41b0-9992-55be47a4aba4
+      CUSTOMER_AI_BUNDLED_KB_PATH: /home/user/app/kb/bundled-hp-public-v2.json
       CUSTOMER_AI_MODEL_ID: Qwen/Qwen3-0.6B
       CUSTOMER_AI_MODEL_REVISION: c1899de289a04d12100db370d81485cdf75e47ca
       CUSTOMER_AI_ENABLE_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_model || '1' }}
@@ -75,8 +77,38 @@ jobs:
       - name: Provision private Space and Bucket and deploy main
         run: python scripts/provision_hf.py
 
-      - name: Synchronize completed KB and run baseline live story tests
+      - name: Synchronize full Master and run baseline live story tests
+        if: env.FULL_NOTION_SYNC_AVAILABLE == 'true'
         run: python scripts/run_live_story_suite.py
+
+      - name: Record full Master synchronization blocker
+        if: env.FULL_NOTION_SYNC_AVAILABLE != 'true'
+        run: |
+          mkdir -p test-results
+          python - <<'PY'
+          import json
+          from datetime import UTC, datetime
+          from pathlib import Path
+
+          Path('test-results/live-story-report.json').write_text(
+              json.dumps(
+                  {
+                      'accepted': False,
+                      'total': 0,
+                      'passed': 0,
+                      'failed': 0,
+                      'score_percent': 0.0,
+                      'free_model_invoked': False,
+                      'failure_stage': 'full_master_notion_token_missing',
+                      'verification_scope': 'full_customerai_master_v2',
+                      'finished_at': datetime.now(UTC).isoformat(),
+                  },
+                  ensure_ascii=False,
+                  indent=2,
+              ),
+              encoding='utf-8',
+          )
+          PY
 
       - name: Run latest HP public AI live story tests
         run: python scripts/run_hp_public_story_suite.py
@@ -158,6 +190,7 @@ jobs:
           echo '- Mount: /data/customer-ai' >> "$GITHUB_STEP_SUMMARY"
           echo "- Free local model: ${CUSTOMER_AI_MODEL_ID}" >> "$GITHUB_STEP_SUMMARY"
           echo "- Model enabled: ${CUSTOMER_AI_ENABLE_MODEL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Full Notion sync available: ${FULL_NOTION_SYNC_AVAILABLE}" >> "$GITHUB_STEP_SUMMARY"
           echo "- GitHub SHA: ${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"
           python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
@@ -177,6 +210,7 @@ jobs:
                   f"({report.get('score_percent', 0):.2f}%)"
               )
               print(f"  - Accepted: {report.get('accepted')}")
+              print(f"  - Failure stage: {report.get('failure_stage')}")
               print(f"  - Free model invoked: {report.get('free_model_invoked')}")
               if report.get('kb_sync'):
                   print(f"  - KB source pages: {report['kb_sync'].get('source_pages')}")
