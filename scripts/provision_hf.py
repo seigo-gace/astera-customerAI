@@ -78,10 +78,31 @@ def verify_bucket(api: HfApi) -> None:
             print("HF_BUCKET_PROBE_REMOVED")
 
 
+def dump_space_logs(api: HfApi) -> None:
+    for label, build in (("BUILD", True), ("RUN", False)):
+        print(f"HF_SPACE_{label}_LOG_BEGIN")
+        try:
+            for line in api.fetch_space_logs(SPACE_ID, build=build, follow=False):
+                print(line, end="" if line.endswith("\n") else "\n")
+        except Exception as error:
+            print(f"HF_SPACE_{label}_LOG_ERROR={error!r}")
+        print(f"HF_SPACE_{label}_LOG_END")
+
+
 def wait_for_space(api: HfApi) -> None:
     last = ""
+    last_stage = ""
     headers = {"Authorization": f"Bearer {TOKEN}"}
     for attempt in range(30):
+        runtime = api.get_space_runtime(SPACE_ID)
+        stage = str(runtime.stage)
+        if stage != last_stage:
+            print(f"HF_SPACE_STAGE={stage}")
+            last_stage = stage
+        if "ERROR" in stage.upper():
+            dump_space_logs(api)
+            raise RuntimeError(f"HF_SPACE_TERMINAL_STAGE:{stage}")
+
         info = api.space_info(
             SPACE_ID,
             expand=["runtime", "private", "sha", "sdk", "subdomain"],
@@ -109,13 +130,21 @@ def wait_for_space(api: HfApi) -> None:
                     )
                     print(f"HF_SPACE_READY_STATUS={ready.status_code}")
                     print(ready.text[:2000])
+                    if ready.status_code != 200:
+                        dump_space_logs(api)
+                        raise RuntimeError(
+                            f"HF_SPACE_READY_FAILED:{ready.status_code}:{ready.text[:500]}"
+                        )
                     print("HF_PRIVATE_RUNTIME_DEPLOYED")
                     return
+            except RuntimeError:
+                raise
             except Exception as error:  # build and cold-start transition
                 last = repr(error)
         if attempt == 29:
             break
         time.sleep(20)
+    dump_space_logs(api)
     raise RuntimeError(f"HF_SPACE_HEALTH_TIMEOUT:{last}")
 
 
