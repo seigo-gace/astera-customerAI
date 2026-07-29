@@ -96,12 +96,21 @@ def wait_for_space(api: HfApi) -> None:
     for attempt in range(30):
         runtime = api.get_space_runtime(SPACE_ID)
         stage = str(runtime.stage)
+        stage_upper = stage.upper()
         if stage != last_stage:
             print(f"HF_SPACE_STAGE={stage}")
             last_stage = stage
-        if "ERROR" in stage.upper():
+        if "ERROR" in stage_upper:
             dump_space_logs(api)
             raise RuntimeError(f"HF_SPACE_TERMINAL_STAGE:{stage}")
+
+        # During RUNNING_BUILDING or APP_STARTING, HF can still serve the previous
+        # container. Never accept health/readiness from that stale runtime.
+        if stage_upper != "RUNNING":
+            if attempt == 29:
+                break
+            time.sleep(20)
+            continue
 
         info = api.space_info(
             SPACE_ID,
@@ -139,13 +148,13 @@ def wait_for_space(api: HfApi) -> None:
                     return
             except RuntimeError:
                 raise
-            except Exception as error:  # build and cold-start transition
+            except Exception as error:  # cold-start transition
                 last = repr(error)
         if attempt == 29:
             break
         time.sleep(20)
     dump_space_logs(api)
-    raise RuntimeError(f"HF_SPACE_HEALTH_TIMEOUT:{last}")
+    raise RuntimeError(f"HF_SPACE_HEALTH_TIMEOUT:{last or last_stage}")
 
 
 def main() -> None:
