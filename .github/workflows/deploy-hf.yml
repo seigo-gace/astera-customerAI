@@ -1,6 +1,11 @@
 name: deploy-private-hf-runtime
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/provision_hf.py'
+      - '.github/workflows/deploy-hf.yml'
   workflow_dispatch:
     inputs:
       enable_model:
@@ -34,7 +39,7 @@ jobs:
       NOTION_DATA_SOURCE_ID: ${{ secrets.NOTION_DATA_SOURCE_ID }}
       CUSTOMER_AI_MODEL_ID: Qwen/Qwen3-4B-Instruct-2507
       CUSTOMER_AI_MODEL_REVISION: cdbee75f17c01a7cc42f958dc650907174af0554
-      CUSTOMER_AI_ENABLE_MODEL: ${{ inputs.enable_model }}
+      CUSTOMER_AI_ENABLE_MODEL: ${{ inputs.enable_model || '0' }}
       INTERNAL_EVENT_SOURCE_ID: hf-private-runtime
       INTERNAL_EVENT_RESULT_DESTINATION_ID: app-receiver
     steps:
