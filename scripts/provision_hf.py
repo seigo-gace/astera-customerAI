@@ -13,6 +13,7 @@ from pathlib import Path
 import httpx
 from huggingface_hub import HfApi, Volume
 
+# Deployment preserves existing HF runtime secrets when GitHub values are absent.
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN = os.environ.get("HF_TOKEN", "")
 NAMESPACE = os.environ.get("HF_NAMESPACE", "G-ACE")
