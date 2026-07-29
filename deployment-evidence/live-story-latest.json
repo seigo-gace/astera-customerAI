@@ -5,14 +5,9 @@
   "failed": 0,
   "score_percent": 0.0,
   "free_model_invoked": false,
-  "failure_stage": "private_space_self_test_request",
-  "http_status": 503,
-  "response": "{\"detail\":\"runtime_notion_token_missing\"}",
-  "space_id": "G-ACE/astera-customerAI",
-  "github_sha": "5532a4ca5b8bc3ecdd0cc53b12a396ead042dea1",
-  "finished_at": "2026-07-29T13:08:32.035238+00:00",
+  "failure_stage": "before_baseline_live_story_report",
   "workflow_status": "failure",
-  "workflow_run_id": "30454304775",
-  "workflow_sha": "5532a4ca5b8bc3ecdd0cc53b12a396ead042dea1",
-  "evidence_persisted_at": "2026-07-29T13:08:33.312159+00:00"
+  "workflow_run_id": "30457165765",
+  "workflow_sha": "32f7375882072d69812b38ba0c8ef616b18ff8e2",
+  "evidence_persisted_at": "2026-07-29T13:43:00.138608+00:00"
 }
