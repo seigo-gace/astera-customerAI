@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: deploy-private-hf-runtime
@@ -64,6 +65,7 @@ jobs:
           pip install --upgrade 'huggingface_hub>=1.24.0' 'httpx>=0.28,<1' --quiet
 
       - name: Pre-deploy full verification
+        id: verify
         run: |
           python scripts/review.py --all
           ruff check . --select E9,F63,F7,F82
@@ -73,9 +75,11 @@ jobs:
           npm run test:edge
 
       - name: Provision private Space and Bucket and deploy main
+        id: provision
         run: python scripts/provision_hf.py
 
       - name: Deployment summary
+        if: success()
         run: |
           {
             echo '## Private HF deployment'
@@ -85,3 +89,23 @@ jobs:
             echo "- Model enabled: ${CUSTOMER_AI_ENABLE_MODEL}"
             echo "- GitHub SHA: ${GITHUB_SHA}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report deployment status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS: ${{ job.status }}
+          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
+          PROVISION_OUTCOME: ${{ steps.provision.outcome }}
+        run: |
+          gh issue comment 9 --body "$(cat <<EOF
+          HF deployment run: ${RUN_ID}
+          URL: ${RUN_URL}
+          SHA: ${GITHUB_SHA}
+          Job status: ${JOB_STATUS}
+          Verification: ${VERIFY_OUTCOME}
+          Provision: ${PROVISION_OUTCOME}
+          EOF
+          )"
