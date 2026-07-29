@@ -1,0 +1,19 @@
+{
+  "schema_version": "customerai_master_v2_hp_public_bundle_v2",
+  "effective_date": "2026-07-29",
+  "source_sha256": "8c2de4259b00a4c64dc175bb76ed7187387db1c127e2f3de66fc21278490d8f5",
+  "source": "CustomerAI_Master_v2",
+  "scope": "latest_hp_public_ai_gateway_boundary",
+  "pages": [
+    {
+      "id": "3accdcf128e4812ca6aec9c8513cbc29-explicit",
+      "url": "https://app.notion.com/p/3accdcf128e4812ca6aec9c8513cbc29",
+      "Title": "Webhook GatewayをCustomer AI専用に改造しましたか？",
+      "Category": "外部連携・Webhook",
+      "Target_Intents": "汎用Gateway Customer AI専用 共通基盤 独立System 専用化 改造",
+      "Definitive_Answer": "Customer AI専用には改造していません。Webhook Gatewayは署名検証、永続化、配送、再送、復旧、監査を共通提供する独立した汎用基盤で、Customer AIは汎用配送先の一つとして接続します。",
+      "Exceptions_and_Limits": "Customer AIの都合だけでGateway本体を専用化したり、責務やProvider Contractを変更したりしません。回答生成とKB検索は配送先Application側の責務です。",
+      "Status": "公開"
+    }
+  ]
+}
