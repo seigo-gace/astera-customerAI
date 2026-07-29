@@ -1,0 +1,13 @@
+{
+  "accepted": false,
+  "total": 0,
+  "passed": 0,
+  "failed": 0,
+  "score_percent": 0.0,
+  "free_model_invoked": false,
+  "failure_stage": "before_live_story_report",
+  "workflow_status": "cancelled",
+  "workflow_run_id": "30437272599",
+  "workflow_sha": "412214bbd4640da9e723bd5fd9c3025a6375c7d0",
+  "evidence_persisted_at": "2026-07-29T09:01:25.908320+00:00"
+}
