@@ -14,9 +14,9 @@ def test_bundled_hp_public_snapshot_is_exact_and_public() -> None:
     pages, metadata = load_bundled_pages()
     assert metadata["source_sha256"] == EXPECTED_SOURCE_HASH
     assert metadata["schema_version"] == "customerai_master_v2_hp_public_bundle_v2"
-    assert metadata["page_count"] == 22
-    assert len(pages) == 22
-    assert len({page["Title"] for page in pages}) == 22
+    assert metadata["page_count"] == 23
+    assert len(pages) == 23
+    assert len({page["Title"] for page in pages}) == 23
     assert all(page["Status"] == "公開" for page in pages)
     assert all(
         page[field]
@@ -51,6 +51,7 @@ def test_bundled_hp_public_snapshot_contains_latest_hp_contract() -> None:
         "Web Form",
         "製品API",
         "Webhook",
+        "Customer AI専用には改造していません",
     ):
         assert required in serialized
     for forbidden in ("月額2,000円", "9,800円", "Stripe", "旧KAGURA"):
