@@ -1,0 +1,1 @@
+Temporary trigger for the verified GitHub main to Hugging Face deployment on 2026-07-29.
