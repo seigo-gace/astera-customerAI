@@ -1,0 +1,229 @@
+{
+  "schema_version": "customerai_master_v2_hp_public_bundle_v2",
+  "effective_date": "2026-07-29",
+  "source_sha256": "8c2de4259b00a4c64dc175bb76ed7187387db1c127e2f3de66fc21278490d8f5",
+  "source": "CustomerAI_Master_v2",
+  "scope": "latest_hp_public_ai_and_required_boundaries",
+  "pages": [
+    {
+      "id": "3accdcf128e4814fbd13ecce13106d4f",
+      "url": "https://app.notion.com/p/3accdcf128e4814fbd13ecce13106d4f",
+      "Title": "Astera v8とは何ですか？",
+      "Category": "製品・概要",
+      "Target_Intents": "Asteraとは アステラとは 外付けAI強化外装 AIを置き換えない Google V8 多重並列思考 判断素材8項目 主役AI",
+      "Definitive_Answer": "Astera v8は、利用中のChatGPT、Claude、Gemini、自作AI・自社AIなどを置き換えず、判断に必要な材料を外側から加える「外付けAI強化外装」です。Google V8を実行基盤として問いを複数工程で整理し、本当の目的、前提不足、事実確認、危機察知、反対視点、比較案、推奨判断、主役AIへの再指示の8項目を作ります。",
+      "Exceptions_and_Limits": "「外付けAI強化外装」は一般向けの役割説明です。技術的にはMulti-Perspective Cognition Runtimeであり、V8は生成AI Modelではありません。全8項目を完全同時実行するのではなく、依存関係を守った並列・順次処理を行います。Asteraだけで専門家判断や未確認事実を保証しません。",
+      "Status": "公開"
+    },
+    {
+      "id": "3accdcf128e4810284efd90d1f35dc6d",
+      "url": "https://app.notion.com/p/3accdcf128e4810284efd90d1f35dc6d",
+      "Title": "「外付けAI強化外装」とは何ですか？",
+      "Category": "製品・概要",
+      "Target_Intents": "外付けAI強化外装 外側から加える AIを置き換えない Astera 公開説明 主役AI",
+      "Definitive_Answer": "「外付けAI強化外装」は、AsteraがChatGPT、Claude、Gemini、自作AI・自社AI等を置き換えず、その外側で判断材料を作って主役AIへ渡す役割を示す一般向け表現です。主役AIの生成能力は残したまま、目的、前提、事実、Risk、反対材料、比較案を追加します。",
+      "Exceptions_and_Limits": "物理的な外装やBrowser拡張だけを意味する名称ではありません。技術的な正式位置付けはMulti-Perspective Cognition Runtimeであり、公開説明とArchitecture説明を目的に応じて使い分けます。",
+      "Status": "公開"
+    },
+    {
+      "id": "3accdcf128e481389164dd1bfba609b6",
+      "url": "https://app.notion.com/p/3accdcf128e481389164dd1bfba609b6",
+      "Title": "AsteraはAIですか？",
+      "Category": "製品・概要",
+      "Target_Intents": "Astera AIですか 生成AI 外付けAI強化外装 Runtime 主役AI 置き換えない",
+      "Definitive_Answer": "Asteraは、最終回答を作る生成AIそのものではありません。利用者の主役AIをそのまま活かし、その外側で問いを整理して判断素材8項目を作り、回答を深く、安全に、目的へ合わせやすくする認知実行Runtimeです。",
+      "Exceptions_and_Limits": "任意のLLMを補強や文章生成に使う構成はありますが、Asteraの本体責務は判断材料の生成です。ChatGPT、Claude、Gemini等のModel能力や専門家の最終判断を置き換えません。",
+      "Status": "公開"
+    },
+    {
+      "id": "3accdcf128e481d5b236ff84f1427661",
+      "url": "https://app.notion.com/p/3accdcf128e481d5b236ff84f1427661",
+      "Title": "Asteraと主役AIの役割はどう違いますか？",
+      "Category": "製品・概要",
+      "Target_Intents": "主役AIとの違い ChatGPT Claude Gemini 役割分担 外付けAI強化外装 判断素材 再指示",
+      "Definitive_Answer": "主役AIは文章、Code、画像、最終回答などを生成します。Asteraはその前段で、本当の目的、足りない前提、事実と推測、危険、反対意見、比較候補、推奨方向を整理し、第8項目として主役AIが回答を作り直せる再指示を渡します。",
+      "Exceptions_and_Limits": "Asteraは主役AIのProviderやModelを固定しません。主役AIへ渡す方法は手動Copy、Web Form、製品API、Webhook連携を想定しますが、提供状態は経路ごとに異なり、未実装の連携を現在利用可能とは案内しません。",
+      "Status": "公開"
+    },
+    {
+      "id": "3accdcf128e481a2aa23f8c5104641ea",
+      "url": "https://app.notion.com/p/3accdcf128e481a2aa23f8c5104641ea",
+      "Title": "判断素材8項目とは何ですか？",
+      "Category": "仕様・機能",
+      "Target_Intents": "判断素材8項目 8つの視点 本当の目的 前提不足 事実確認 危機察知 反対視点 比較案 推奨判断 主役AIへの再指示",
+      "Definitive_Answer": "判断素材8項目は、1.本当の目的、2.前提不足、3.事実確認、4.危機察知、5.反対視点、6.比較案、7.推奨判断、8.主役AIへの再指示です。問いを表面のまま主役AIへ渡さず、目的・不足・事実・危険・反論・選択肢を整理し、最後に回答を作り直すための指示へ変換します。",
+      "Exceptions_and_Limits": "8項目は公開出力Contractです。内部の5本柱・38 Genre Lens・Overlay等は8項目を作る技術処理であり、8項目と同じ分類ではありません。全項目を完全同時に処理する意味でもありません。",
+      "Status": "公開"
+    },
+    {
+      "id": "3accdcf128e4813392ccfb0f9c7774a3",
+      "url": "https://app.notion.com/p/3accdcf128e4813392ccfb0f9c7774a3",
+      "Title": "「本当の目的」では何を確認しますか？",
+      "Category": "仕様・機能",
+      "Target_Intents": "本当の目的 真の目的 表面の依頼 ゴール 成功条件 誰向け 優先順位 避けたい失敗",
+      "Definitive_Answer": "表面的な依頼の奥にある、本当に達成したい目的を整理します。主役AIへは、本当の目的、成功条件、優先順位、避けたい失敗、誰に向けた回答かを渡します。これにより、文章を整えるだけではなく、利用者が実際に達成したいことへ合う回答になりやすくなります。",
+      "Exceptions_and_Limits": "利用者の意図を勝手に確定せず、複数の目的が考えられる場合や結果が変わる場合は必要最小限の確認を行います。推測した目的は確認済み事実として扱いません。",
+      "Status": "公開"
+    },
+    {
+      "id": "3accdcf128e481a2a301f8545756c203",
+      "url": "https://app.notion.com/p/3accdcf128e481a2a301f8545756c203",
+      "Title": "「前提不足」では何を確認しますか？",
+      "Category": "仕様・機能",
+      "Target_Intents": "前提不足 情報不足 確認質問 対象 予算 期限 人員 技術条件 運用 読者 制約",
+      "Definitive_Answer": "回答を実際に使えるものへするため、対象、予算、期限、人員、技術条件、運用方法、読者、目的などの抜けを探します。主役AIへは、足りない条件、確認すべき質問、置くべき前提、制約、未決定事項を渡し、思い込みや条件抜けによる回答のズレを減らします。",
+      "Exceptions_and_Limits": "不足があっても一般条件を先に説明できる場合は回答を止めません。回答結果が大きく変わる情報だけを追加確認し、不要な質問を繰り返しません。",
+      "Status": "公開"
+    },
+    {
+      "id": "3accdcf128e481fc971ed84e834ec31b",
+      "url": "https://app.notion.com/p/3accdcf128e481fc971ed84e834ec31b",
+      "Title": "「事実確認」では何を確認しますか？",
+      "Category": "仕様・機能",
+      "Target_Intents": "事実確認 ファクトチェック 根拠 未確認情報 推測 意見 最新情報 断定を避ける",
+      "Definitive_Answer": "問い・資料・AI回答に含まれる内容を、確認済みの事実、推測・意見、未確認情報へ分けます。主役AIへは、確認済み事実、推測として扱う内容、調べるべき点、断定を避ける箇所を渡し、嘘や思い込みが事実のように混ざるのを防ぎます。",
+      "Exceptions_and_Limits": "Astera単体が外部世界の事実を自動保証するものではありません。法律、料金、最新仕様、現在情報等は、承認された一次Sourceと確認日時が必要です。",
+      "Status": "公開"
+    },
+    {
+      "id": "3accdcf128e481e0a758ea10c84bfa9d",
+      "url": "https://app.notion.com/p/3accdcf128e481e0a758ea10c84bfa9d",
+      "Title": "「危機察知」では何を確認しますか？",
+      "Category": "仕様・機能",
+      "Target_Intents": "危機察知 リスク 危険 失敗 信用低下 法務 セキュリティ コスト 運用破綻 炎上",
+      "Definitive_Answer": "実行後に問題となる条件を先に探します。炎上、誤解、法務、信用低下、運用破綻、Cost増、Security不備、利用者Trouble等を確認し、主役AIへ想定Risk、発生条件、避ける表現・手順、先に行う対策、代替案を渡します。",
+      "Exceptions_and_Limits": "Risk候補は発生確定を意味しません。重大度、発生可能性、影響範囲、回避可能性を区別し、過度に止めるだけの回答にしません。高Risk領域では専門家・責任者の確認を優先します。",
+      "Status": "公開"
+    },
+    {
+      "id": "3accdcf128e481489f64e8186add5742",
+      "url": "https://app.notion.com/p/3accdcf128e481489f64e8186add5742",
+      "Title": "「反対視点」では何を確認しますか？",
+      "Category": "仕様・機能",
+      "Target_Intents": "反対視点 反論 批判 逆の立場 弱点 別の見え方 補強",
+      "Definitive_Answer": "依頼者の案をそのまま肯定せず、あえて逆側から弱点、反論、批判されやすい表現、別の立場からの見え方を確認します。主役AIへ補強すべき論点を渡すことで、反論や批判に耐えやすい厚みのある回答へ作り直せます。",
+      "Exceptions_and_Limits": "反対すること自体を目的にせず、根拠のない否定や利用者への攻撃を生成しません。反対材料と、それを踏まえても採用する理由を分けます。",
+      "Status": "公開"
+    },
+    {
+      "id": "3accdcf128e4819da919e79e9d6ac6e9",
+      "url": "https://app.notion.com/p/3accdcf128e4819da919e79e9d6ac6e9",
+      "Title": "「比較案」では何を確認しますか？",
+      "Category": "仕様・機能",
+      "Target_Intents": "比較案 代替案 案A 案B 案C 選択肢 メリット デメリット 採用条件 段階案",
+      "Definitive_Answer": "最初の一案へ固定せず、別の方法、段階的な方法、安い方法、安全な方法、早い方法等を並べます。主役AIへ案A・B・C、それぞれの利点、欠点、採用条件、捨てるべき案、段階的な進め方を渡し、比較して選べる回答にします。",
+      "Exceptions_and_Limits": "数を増やすだけの案出しは行わず、目的・制約に合わない案は理由付きで除外します。比較軸や前提が異なる案を同じ条件として扱いません。",
+      "Status": "公開"
+    },
+    {
+      "id": "3accdcf128e481e489d4c34874cab832",
+      "url": "https://app.notion.com/p/3accdcf128e481e489d4c34874cab832",
+      "Title": "「推奨判断」は最終決定ですか？",
+      "Category": "仕様・機能",
+      "Target_Intents": "推奨判断 推奨する方向 理由 判断条件 注意点 次の一手 最終決定",
+      "Definitive_Answer": "最終決定ではありません。本当の目的、前提、事実、危険、反対視点、比較案をまとめ、現時点で最も筋の良い方向、その理由、採用条件、注意点、次の一手、採用しない案の理由を示す条件付き提案です。",
+      "Exceptions_and_Limits": "最終決定権と責任は利用者または権限を持つ組織に残ります。未確認事項が結論を変える場合は、確認後に推奨を更新します。法律・医療・投資等の専門判断を代行しません。",
+      "Status": "公開"
+    },
+    {
+      "id": "3accdcf128e481d68b8fd6e751205525",
+      "url": "https://app.notion.com/p/3accdcf128e481d68b8fd6e751205525",
+      "Title": "「主役AIへの再指示」はどう使いますか？",
+      "Category": "仕様・機能",
+      "Target_Intents": "主役AIへの再指示 再指示文 Prompt コピー ChatGPT Claude Gemini 自作AI 自社AI",
+      "Definitive_Answer": "第1〜7項目で整理した目的、追加前提、確認すべき事実、避ける危険、反対材料、比較案、推奨方向を、主役AIが回答を作り直せる一つの指示へ変換します。利用者はその再指示をChatGPT、Claude、Gemini、自作AI・自社AI等へ渡して使います。",
+      "Exceptions_and_Limits": "「もう一度考えて」だけではなく、重視する目的、禁止事項、出力形式、最終回答の条件まで含めます。未確認事実を確定情報へ変えたり、主役AIのProvider仕様・Safety制約を回避する指示は作りません。",
+      "Status": "公開"
+    },
+    {
+      "id": "3accdcf128e481509816db2ae89908c5",
+      "url": "https://app.notion.com/p/3accdcf128e481509816db2ae89908c5",
+      "Title": "Astera v8でいうV8は生成AI Modelですか？",
+      "Category": "Astera本体・技術",
+      "Target_Intents": "Google V8 V8 JavaScript Runtime 生成AI Model 多重並列思考 Worker 実行基盤",
+      "Definitive_Answer": "違います。V8はJavaScriptを実行するRuntimeで、Asteraでは問いの正規化、分類、独立処理、並列実行、状態管理、結果統合を動かす実行基盤として使います。生成AI Modelそのものではありません。",
+      "Exceptions_and_Limits": "一般向けの「Google V8で多重並列思考を走らせる」は役割を分かりやすくした公開表現です。技術的には全工程を同時に走らせず、Inquiryの事前判定、Fact・Risk等の並列処理、依存するMulti・Compare、8項目整形の順序を守ります。",
+      "Status": "公開"
+    },
+    {
+      "id": "3accdcf128e481948c95fdd3836bc0c7",
+      "url": "https://app.notion.com/p/3accdcf128e481948c95fdd3836bc0c7",
+      "Title": "Asteraの「多重並列思考」とは何ですか？",
+      "Category": "Astera本体・技術",
+      "Target_Intents": "多重並列思考 Google V8 並列処理 同時処理 5本柱 8項目 依存順序",
+      "Definitive_Answer": "問いを一つの一本道だけで処理せず、事実、危険、問いの前提等の独立して確認できる工程をV8上で並列化し、その結果を多角・比較工程へ渡して8項目へ統合する処理です。複数の視点を同時期に検討しつつ、依存関係がある工程は順序を守ります。",
+      "Exceptions_and_Limits": "8項目全部や5本柱全部を完全同時に実行する意味ではありません。並列化によって正しさが自動保証されるものでもなく、Evidence、現在情報、Quality Gate、最終確認が別に必要です。",
+      "Status": "公開"
+    },
+    {
+      "id": "3accdcf128e481ad856ef975d57f8dc2",
+      "url": "https://app.notion.com/p/3accdcf128e481ad856ef975d57f8dc2",
+      "Title": "Asteraの判断材料を主役AIへどう渡しますか？",
+      "Category": "利用方法",
+      "Target_Intents": "AIへ渡す方法 コピー フォーム API Webhook 主役AI 再指示 手動 自動連携",
+      "Definitive_Answer": "公開構想では、1.判断材料または再指示をCopyして主役AIへ貼る、2.Web Formから受け取る、3.製品APIで自作AI・自社AI・SaaSへ組み込む、4.Webhookで業務FlowやBotへ配送する方法を使い分けます。最初は手動Copyで利用でき、後からAPI・Webhookで自動化する考え方です。",
+      "Exceptions_and_Limits": "現在の製品版App・Account・API・Webhook連結はすべて本番提供済みではありません。手動Copy、現行Frontend操作、Standalone Runtime、製品版API、汎用Webhook Gatewayを区別し、利用可能状態は各機能の最新実装に従います。",
+      "Status": "公開"
+    },
+    {
+      "id": "3accdcf128e481c0bb77d011268fb6b7",
+      "url": "https://app.notion.com/p/3accdcf128e481c0bb77d011268fb6b7",
+      "Title": "Asteraを使うと主役AIの回答が強くなるのはなぜですか？",
+      "Category": "製品・概要",
+      "Target_Intents": "強くなる理由 回答品質 目的 前提抜け 事実 推測 危険 反対意見 比較 検証 レビュー",
+      "Definitive_Answer": "主役AIへ質問だけを渡すのではなく、本当の目的、足りない前提、事実と推測の区別、危険、反対意見、比較案、推奨条件を先に渡すためです。これにより、目的に合いやすくなり、前提抜けや未確認断定が減り、比較・検証・Reviewを踏まえて回答を作り直しやすくなります。",
+      "Exceptions_and_Limits": "必ず正解になる、すべてのAIが同じ幅で改善する、専門家確認が不要になるという保証ではありません。入力品質、KB・Evidence、主役AIの能力、現在情報、利用者の最終判断に依存します。",
+      "Status": "公開"
+    },
+    {
+      "id": "3accdcf128e4816b8563efa698b07a0d",
+      "url": "https://app.notion.com/p/3accdcf128e4816b8563efa698b07a0d",
+      "Title": "HPの一般向け説明とAsteraの技術説明は矛盾しますか？",
+      "Category": "製品・概要",
+      "Target_Intents": "HP公開説明 技術説明 外付けAI強化外装 Multi-Perspective Cognition Runtime 5本柱 38 Lens 8項目 違い",
+      "Definitive_Answer": "矛盾しません。HPはAsteraの価値を「外付けAI強化外装」「Google V8による多重並列思考」「判断素材8項目」「主役AIへ渡す」と説明します。技術説明は、その8項目を作るための5本柱、38 Genre Lens、Overlay、Worker、依存順序、Quality Gate等を説明します。",
+      "Exceptions_and_Limits": "一般向け表現を理由に技術構造を省略・改変したり、技術Module名をそのまま一般利用者へ押しつけたりしません。料金・Provider・実装状態は最新正本を別途確認し、旧公開Packageの値を現在仕様として使いません。",
+      "Status": "公開"
+    },
+    {
+      "id": "3accdcf128e481e0bbb7c52e0c7a0b4b",
+      "url": "https://app.notion.com/p/3accdcf128e481e0bbb7c52e0c7a0b4b",
+      "Title": "BrowserからWebhook GatewayやPrivate HFへ直接接続しますか？",
+      "Category": "Customer AI",
+      "Target_Intents": "Browser Direct Gateway HF Prohibited Cloudflare",
+      "Definitive_Answer": "接続しません。BrowserはCloudflareのSame-Origin Public APIを使用し、Server側で検証・Context解決後に汎用GatewayとPrivate HFへ配送する設計です。",
+      "Exceptions_and_Limits": "Private Endpoint、Secret、AuthorizationをBrowserへ露出しません。実接続は未完了です。",
+      "Status": "公開"
+    },
+    {
+      "id": "3accdcf128e4812ca6aec9c8513cbc29",
+      "url": "https://app.notion.com/p/3accdcf128e4812ca6aec9c8513cbc29",
+      "Title": "Webhook GatewayはCustomer AI専用のSystemですか？",
+      "Category": "外部連携・Webhook",
+      "Target_Intents": "汎用Gateway Customer AI専用 共通基盤 独立System",
+      "Definitive_Answer": "いいえ。Webhook Gatewayは外部ProviderからのWebhookを共通に受け、署名検証、永続化、配送、再送、復旧、監査を行う独立した汎用基盤です。Customer AIは、その汎用配送先の一つとして接続します。",
+      "Exceptions_and_Limits": "Customer AIの都合だけでGateway本体の責務やProvider Contractを変更しません。製品固有の回答生成やKB検索は配送先Application側の責務です。",
+      "Status": "公開"
+    },
+    {
+      "id": "3accdcf128e4811da043cc981d821d83",
+      "url": "https://app.notion.com/p/3accdcf128e4811da043cc981d821d83",
+      "Title": "Customer AIはKBにない情報をModel知識で補いますか？",
+      "Category": "Customer AI",
+      "Target_Intents": "Hallucination Model Knowledge Fill Missing KB",
+      "Definitive_Answer": "補いません。製品事実は検索済みKBまたは承認Sourceだけを使い、該当情報が無い場合は「現在、該当する正確な案内情報が登録されていません」と返します。",
+      "Exceptions_and_Limits": "文章の整形にModelを使う場合も、新しい事実、数値、機能、保証を追加させません。",
+      "Status": "公開"
+    },
+    {
+      "id": "3accdcf128e4816998dad199b87e1da9",
+      "url": "https://app.notion.com/p/3accdcf128e4816998dad199b87e1da9",
+      "Title": "Customer AIはどの情報を正本として回答しますか？",
+      "Category": "Customer AI",
+      "Target_Intents": "Source of Truth 正本 Notion GitHub Current Public",
+      "Definitive_Answer": "確定した公開Master、認証済みのAccount・契約・決済・Job等の正本System、承認されたCurrent Data Sourceを回答根拠にします。技術の現在状態は現行Repositoryと実行結果へ照合します。",
+      "Exceptions_and_Limits": "会話履歴、Model学習知識、古いREADME、未承認Web情報を製品事実の正本にしません。",
+      "Status": "公開"
+    }
+  ]
+}
