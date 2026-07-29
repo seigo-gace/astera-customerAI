@@ -21,7 +21,9 @@ from .storage import ConflictError, JobStore
 from .support import FeedbackStore
 from .v8 import V8Supervisor
 
+
 LOGGER = logging.getLogger(__name__)
+SUPPORT_PIPELINE = "astera-customerai-master-v2-kb-only"
 
 
 class InternalEventApiClient:
@@ -282,7 +284,7 @@ class CustomerAIService:
                 "source_id": self.settings.internal_event_source_id,
                 "result_destination_id": self.settings.internal_event_result_destination_id,
             },
-            "support_pipeline": "astera-derived-document-task-search-evidence-blueprint",
+            "support_pipeline": SUPPORT_PIPELINE,
         }
 
 
