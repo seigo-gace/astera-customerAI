@@ -11,7 +11,15 @@ from runtime.security import canonical_json, sign_hmac, sign_standard_webhook
 from tests.test_story_runtime import story_pages
 
 
-def internal_signed_headers(body: bytes, secret: str = "test-secret", *, content_type: str = "application/json") -> dict[str, str]:
+PIPELINE_NAME = "astera-customerai-master-v2-kb-only"
+
+
+def internal_signed_headers(
+    body: bytes,
+    secret: str = "test-secret",
+    *,
+    content_type: str = "application/json",
+) -> dict[str, str]:
     timestamp = str(int(time.time()))
     return {
         "content-type": content_type,
@@ -32,7 +40,9 @@ def gateway_signed_headers(
         "content-type": "application/json",
         "webhook-id": webhook_id,
         "webhook-timestamp": timestamp,
-        "webhook-signature": sign_standard_webhook(body, webhook_id, timestamp, secret),
+        "webhook-signature": sign_standard_webhook(
+            body, webhook_id, timestamp, secret
+        ),
         "webhook-event": event_type,
         "x-gace-destination": "customer-ai-hf",
     }
@@ -61,14 +71,21 @@ def event(*, index: int, session_id: str, message: str) -> dict:
     }
 
 
-def test_operational_signed_ingress_processing_persistence_and_follow_up(data_root, monkeypatch):
+def test_operational_signed_ingress_processing_persistence_and_follow_up(
+    data_root, monkeypatch
+):
+    del monkeypatch
     import app as app_module
 
     app_module = importlib.reload(app_module)
     session_id = "session_operational_restart"
-    first_event = event(index=1, session_id=session_id, message="購入したクレジットが反映されません")
+    first_event = event(
+        index=1,
+        session_id=session_id,
+        message="購入したクレジットが反映されません",
+    )
     first_body = canonical_json(first_event)
-    sync_body = canonical_json({"version": "operational-v1", "pages": story_pages()})
+    sync_body = canonical_json({"version": "operational-v2", "pages": story_pages()})
 
     with TestClient(app_module.app) as client:
         health = client.get("/healthz")
@@ -77,12 +94,20 @@ def test_operational_signed_ingress_processing_persistence_and_follow_up(data_ro
         assert health.json() == {"status": "ok"}
         assert ready.status_code == 200
         assert ready.json()["checks"]["v8"] is True
-        assert ready.json()["checks"]["support_pipeline"] == "astera-derived-document-task-search-evidence-blueprint"
+        assert ready.json()["checks"]["support_pipeline"] == PIPELINE_NAME
 
-        bad_sync = client.post("/internal/kb/sync", content=sync_body, headers={"content-type": "application/json"})
+        bad_sync = client.post(
+            "/internal/kb/sync",
+            content=sync_body,
+            headers={"content-type": "application/json"},
+        )
         assert bad_sync.status_code == 401
 
-        synced = client.post("/internal/kb/sync", content=sync_body, headers=internal_signed_headers(sync_body))
+        synced = client.post(
+            "/internal/kb/sync",
+            content=sync_body,
+            headers=internal_signed_headers(sync_body),
+        )
         assert synced.status_code == 202
         assert synced.json()["source_pages"] == len(story_pages())
 
@@ -105,7 +130,9 @@ def test_operational_signed_ingress_processing_persistence_and_follow_up(data_ro
         duplicate = client.post(
             "/internal/customer-ai/accept",
             content=first_body,
-            headers=gateway_signed_headers(first_body, webhook_id="wh_customer_ai_delivery_0002"),
+            headers=gateway_signed_headers(
+                first_body, webhook_id="wh_customer_ai_delivery_0002"
+            ),
         )
         assert duplicate.status_code == 202
         assert duplicate.json()["created"] is False
@@ -113,7 +140,7 @@ def test_operational_signed_ingress_processing_persistence_and_follow_up(data_ro
         processing_result = client.portal.call(app_module.service.process_job, job_id)
         assert processing_result["status"] == "completed"
         assert "決済状態" in processing_result["answer"]
-        assert processing_result["execution"]["pipeline"] == "astera-derived-document-task-search-evidence-blueprint"
+        assert processing_result["execution"]["pipeline"] == PIPELINE_NAME
 
         stored = client.get(f"/internal/customer-ai/jobs/{job_id}")
         assert stored.status_code == 200
@@ -127,11 +154,17 @@ def test_operational_signed_ingress_processing_persistence_and_follow_up(data_ro
         assert unknown.status_code == 404
 
     app_module = importlib.reload(app_module)
-    follow_up_event = event(index=2, session_id=session_id, message="昨日の夜です。どこを確認すればいい？")
+    follow_up_event = event(
+        index=2,
+        session_id=session_id,
+        message="昨日の夜です。どこを確認すればいい？",
+    )
     follow_up_body = canonical_json(follow_up_event)
 
     with TestClient(app_module.app) as restarted_client:
-        restored = restarted_client.get(f"/internal/customer-ai/jobs/{first_event['data']['job_id']}")
+        restored = restarted_client.get(
+            f"/internal/customer-ai/jobs/{first_event['data']['job_id']}"
+        )
         assert restored.status_code == 200
         assert restored.json()["result"]["status"] == "completed"
 
