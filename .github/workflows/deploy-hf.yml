@@ -1,10 +1,10 @@
 name: deploy-private-hf-runtime
 
 on:
-  pull_request:
+  push:
     branches: [main]
     paths:
-      - '.github/hf-deploy-trigger.txt'
+      - '.github/workflows/deploy-hf.yml'
   workflow_dispatch:
     inputs:
       enable_model:
