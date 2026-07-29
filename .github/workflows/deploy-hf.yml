@@ -13,13 +13,17 @@ on:
     branches: [main]
     paths:
       - '.deploy/customer-ai-free-model'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.deploy/customer-ai-free-model'
 
 permissions:
   contents: write
 
 concurrency:
   group: deploy-private-hf-runtime
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   deploy:
@@ -88,7 +92,7 @@ jobs:
           retention-days: 30
 
       - name: Persist latest deployment evidence
-        if: always()
+        if: always() && github.event_name != 'pull_request'
         env:
           WORKFLOW_STATUS: ${{ job.status }}
           WORKFLOW_RUN_ID: ${{ github.run_id }}
