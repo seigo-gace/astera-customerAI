@@ -14,17 +14,16 @@ async def test_accept_and_process_without_model(data_root):
     settings = Settings.load()
     service = CustomerAIService(settings)
     service.kb.build_snapshot(
-        version="test",
+        version="test-v2",
         pages=[
             {
                 "id": "kb-credit",
-                "質問": "購入したクレジットが反映されません",
-                "短い回答": "決済状態と付与状態を確認します。",
-                "本文": "購入時刻を確認し、決済とクレジット付与を順に照合します。",
-                "検索語": "クレジット 未反映 買ったのに増えない",
-                "公開状態": "公開",
-                "実装状態": "文書確認済み",
-                "要再確認": False,
+                "Title": "購入したクレジットが反映されません",
+                "Category": "トラブルシューティング",
+                "Target_Intents": "クレジット 未反映 買ったのに増えない",
+                "Definitive_Answer": "決済状態と付与状態を確認します。購入時刻を確認し、決済とクレジット付与を順に照合します。",
+                "Exceptions_and_Limits": "実際の決済状態を確認せず、完了と断定しません。",
+                "Status": "公開",
             }
         ],
     )
@@ -84,6 +83,7 @@ async def test_accept_rejects_unsafe_job_id(data_root):
 @pytest.mark.asyncio
 async def test_recovery_requeues_stale_accepted_job(data_root):
     from datetime import timedelta
+
     settings = Settings.load()
     service = CustomerAIService(settings)
     event = CloudEvent(
@@ -104,11 +104,15 @@ async def test_recovery_requeues_stale_accepted_job(data_root):
         },
     )
     await service.accept(event)
-    service.jobs.update_job("job_recovery1", updated_at=datetime.now(UTC) - timedelta(minutes=2))
+    service.jobs.update_job(
+        "job_recovery1", updated_at=datetime.now(UTC) - timedelta(minutes=2)
+    )
     record = service.jobs.get_job("job_recovery1")
     data = record.model_dump(mode="json")
     data["updated_at"] = (datetime.now(UTC) - timedelta(minutes=2)).isoformat()
-    service.jobs.store.put_json(service.jobs.job_dir("job_recovery1") / "status.json", data)
+    service.jobs.store.put_json(
+        service.jobs.job_dir("job_recovery1") / "status.json", data
+    )
     result = await service.recover_once()
     assert result["count"] == 1
     assert service.jobs.get_job("job_recovery1").status == "retrying"
