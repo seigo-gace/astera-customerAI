@@ -238,7 +238,6 @@ def main() -> None:
             ".env",
             "docs/**",
             "tests/**",
-            "edge/**",
             "test-results/**",
             "state.md",
         ],
