@@ -1,6 +1,6 @@
 ---
 title: Astera Customer AI
-emoji: ✦
+emoji: ✨
 colorFrom: gray
 colorTo: yellow
 sdk: gradio
@@ -38,156 +38,133 @@ Astera itself is not executed. The runtime adapts the useful Astera/KAGRRA engin
 
 ```text
 Current message
-  + bounded conversation state
-  -> Japanese normalization and reference context
-  -> question-task decomposition
-  -> bounded per-task search planning
-  -> parallel approved-KB retrieval
-  -> task/evidence binding
-  -> support blueprint
-  -> deterministic response when sufficient
-  -> optional lightweight Japanese composition
-  -> V8 and Python completion/security verification
-  -> at most one repair
-  -> bounded state and KB-feedback update
+  -> normalize
+  -> bounded session context
+  -> document/question decomposition
+  -> task classification
+  -> per-task KB search planning
+  -> Notion retrieval
+  -> evidence binding
+  -> answer blueprint
+  -> deterministic answer or optional model composition
+  -> deterministic verification
+  -> one bounded repair
+  -> generic Webhook Gateway reply event
+  -> app/HP receiver
 ```
 
-## Processing grades
-
-- `L0_DETERMINISTIC_EXACT`: one confirmed exact answer; no model call.
-- `L1_STRUCTURED_COMPOSE`: deterministic structured answer from confirmed KB evidence.
-- `L2_MULTI_TASK_COMPOSE`: multiple questions or comparison; optional model composition from the prepared blueprint.
-- `L3_CONTEXT_REQUIRED`: answer all resolvable tasks and request only task-specific missing information.
-
-These grades change the processing around one lightweight model. They do not create a multi-model system.
-
-## Conversation state
-
-Each session stores only bounded response context:
-
-- user goal;
-- active topic;
-- confirmed details;
-- answered question IDs;
-- unresolved questions;
-- question ledger;
-- recently used KB IDs;
-- reusable evidence summaries;
-- last support blueprint;
-- latest bounded conversation turns.
-
-State is cached in memory and persisted to the mounted private bucket for restart recovery.
-
-## Responsibility boundaries
-
-- Cloudflare Customer AI Edge: the shared HP/app browser API, Turnstile, CORS, Rate Limiting, short-lived job/result storage, and polling.
-- Universal Webhook Gateway: product-neutral `POST /internal/events`, durable Event/Delivery/Outbox persistence, registered-destination delivery, retry, replay, spool recovery, circuit breaking, and audit.
-- This private Space: support preparation Runtime, bounded session state, approved-KB retrieval, optional model composition, verification, and feedback candidates.
-- Private HF bucket at `/data/customer-ai`: jobs, sessions, KB snapshots, evidence/cache state, and review candidates.
-- Notion: approved Customer AI KB source of truth.
-- TGserver: sanitized long-term operational and audit logs.
-
-The Space must never be called directly by browsers. Customer AI-specific event names and payload rules remain in the Customer AI/Edge repositories; the Webhook Gateway does not own them.
-
-## Required Space and Bucket settings
-
-The deployment workflow creates a Private Gradio Space, creates a Private Bucket, and mounts it read-write:
+## Runtime topology
 
 ```text
-hf://buckets/G-ACE/astera-customerai-data:/data/customer-ai
+Cloudflare Customer AI Edge
+  -> Universal Webhook Gateway generic POST /internal/events
+  -> Private Hugging Face Space
+  -> Private Hugging Face Bucket mounted at /data/customer-ai
+  -> Notion KB
+  -> Universal Webhook Gateway generic POST /internal/events
+  -> Cloudflare receiver
 ```
 
-Required GitHub Repository Secrets used by `.github/workflows/deploy-hf.yml`:
+The browser must not call this private Space directly.
 
-```text
-HF_TOKEN
-CUSTOMER_AI_HMAC_SECRET
-INTERNAL_EVENT_API_URL
-INTERNAL_EVENT_API_TOKEN
-NOTION_TOKEN
-NOTION_DATA_SOURCE_ID
-```
+## Generic internal event contract
 
-The workflow copies only the runtime secrets needed by the Private Space. It does not expose the HF token, Gateway token, Notion token, private Space URL, or callback signature secret to browsers.
+Ingress event:
 
-Runtime variables include:
+- `event_type`: `customer_ai.requested`
+- `source_id`: Cloudflare source identity
+- `destination_ids`: includes the HF private-runtime destination
+- `payload`: normalized customer message, locale, channel, session ID, and optional document
 
-```text
-CUSTOMER_AI_DATA_ROOT=/data/customer-ai
-INTERNAL_EVENT_SOURCE_ID=hf-private-runtime
-INTERNAL_EVENT_RESULT_DESTINATION_ID=app-receiver
-CUSTOMER_AI_MODEL_ID=Qwen/Qwen3-4B-Instruct-2507
-CUSTOMER_AI_MODEL_REVISION=cdbee75f17c01a7cc42f958dc650907174af0554
-CUSTOMER_AI_ENABLE_MODEL=0
-```
+Result event:
 
-The model remains disabled for the first deterministic deployment. Enable it only after Space health, Bucket persistence, KB snapshot synchronization, Gateway delivery, result callback, and deterministic Story tests succeed.
+- `event_type`: `customer_ai.completed`
+- `source_id`: `hf-private-runtime`
+- `destination_ids`: includes the app receiver
+- `payload`: answer, citations, verification report, session state summary, and deduplicated feedback candidate references
 
-## API
+No Customer-AI-specific route is added to the universal Gateway.
 
-Private Space endpoints:
+## Runtime endpoints
 
 - `GET /healthz`
 - `GET /readyz`
-- `POST /internal/customer-ai/accept`
-- `GET /internal/customer-ai/jobs/{job_id}`
-- Gradio API `customer_ai_process`
-- `POST /internal/kb/sync`
-- `POST /internal/recovery/run`
+- `POST /internal/events`
+- `POST /internal/customer-ai`
 
-Shared Cloudflare Edge endpoints:
+The direct customer endpoint exists for private runtime verification and controlled internal callers. The production integration uses the generic event endpoint.
 
-- `POST /v1/customer-ai/messages`
-- `GET /v1/customer-ai/jobs/{job_id}`
-- `POST /v1/customer-ai/events` — signed result receiver
-- `GET /healthz`
+## Authentication
 
-The official website and Astera App use the same Edge contract. The Edge submits product-specific events through the Gateway's generic internal API. The Gateway delivers to a deployment-registered private-runtime destination. The Space emits results through the same generic internal API to a deployment-registered Edge result destination.
+The Space verifies the same generic Gateway HMAC headers used by the repository adapter:
 
-## KB feedback
+- `X-Webhook-Timestamp`
+- `X-Webhook-Nonce`
+- `X-Webhook-Signature`
 
-Runtime feedback never publishes directly to Notion. Candidates are anonymized, deduplicated, and stored with:
+The signing secret is injected as `CUSTOMER_AI_HMAC_SECRET`.
 
-```json
-{
-  "approval_required": true,
-  "auto_publish": false
-}
+## Runtime persistence
+
+All writable runtime state lives under `CUSTOMER_AI_DATA_ROOT`.
+
+The deployment provisions a private HF Bucket named `G-ACE/astera-customerai-data` and mounts it at:
+
+```text
+/data/customer-ai
 ```
 
-Approved Notion updates are rebuilt into a new runtime KB snapshot.
+Persisted files include:
 
-## Lightweight model
+- session state;
+- KB search cache;
+- feedback candidates;
+- feedback deduplication index;
+- owner-review feedback JSONL.
 
-- Default: `Qwen/Qwen3-4B-Instruct-2507`.
-- The revision must remain pinned.
-- Inference stays disabled until deployment and secrets are verified.
-- The model receives a prepared Support Packet containing question tasks, search plans, verified evidence, and an answer blueprint.
-- The model cannot own routing, facts, action execution, or completion.
-- A deterministic KB response remains available when inference is disabled or its daily budget is exhausted.
+## Optional model
 
-## GitHub verification
+The default runtime mode is `CUSTOMER_AI_ENABLE_MODEL=0`.
 
-```bash
-python -m pip install -r requirements-dev.txt
-python scripts/review.py --all
-ruff check . --select E9,F63,F7,F82
-pytest -q
-npm test
-npm run check:edge
-npm run test:edge
+The deterministic path remains operational without loading a model. When enabled, the model is pinned to:
+
+```text
+Qwen/Qwen3-4B-Instruct-2507
+revision: cdbee75f17c01a7cc42f958dc650907174af0554
 ```
 
-## Deployment order
+The model may compose language from the answer blueprint. It does not own task decomposition, KB retrieval, evidence binding, verification, or feedback approval.
 
-1. Merge verified GitHub changes to `main`.
-2. Register the required GitHub Repository Secrets.
-3. Run `deploy-private-hf-runtime` with the model disabled.
-4. Confirm Private Space, Private Bucket, `/data/customer-ai` mount, `/healthz`, and `/readyz`.
-5. Register generic Gateway deployment destinations outside the universal repository source.
-6. Deploy the Cloudflare Customer AI Edge and its KV/Rate Limit/Turnstile bindings.
-7. Synchronize the approved Notion KB snapshot into the Bucket.
-8. Run HP/App → Edge → Gateway → HF → Gateway → Edge → HP/App production E2E.
-9. Enable the optional model only after deterministic release gates pass.
+## Important environment variables
 
-See `docs/IMPLEMENTATION_PLAN.md` for the HF, Gateway, and Cloudflare implementation boundaries.
+| Name | Purpose |
+|---|---|
+| `CUSTOMER_AI_HMAC_SECRET` | Generic Gateway request authentication |
+| `CUSTOMER_AI_DATA_ROOT` | Mounted persistent data root |
+| `NOTION_TOKEN` | Approved KB access |
+| `NOTION_DATA_SOURCE_ID` | Approved KB data source |
+| `INTERNAL_EVENT_API_URL` | Generic Gateway internal event endpoint |
+| `INTERNAL_EVENT_API_TOKEN` | Gateway internal bearer token |
+| `CUSTOMER_AI_ENABLE_MODEL` | Enables optional lightweight model |
+| `CUSTOMER_AI_MODEL_ID` | Pinned model ID |
+| `CUSTOMER_AI_MODEL_REVISION` | Pinned model revision |
+| `CUSTOMER_AI_GPU_DAILY_BUDGET_SECONDS` | Internal daily GPU budget guard |
+| `INTERNAL_EVENT_SOURCE_ID` | Source ID for result events |
+| `INTERNAL_EVENT_RESULT_DESTINATION_ID` | Result receiver destination ID |
+
+## Deployment
+
+The deployment workflow:
+
+1. checks out `main`;
+2. runs the complete repository verification suite;
+3. creates or reuses the private Bucket;
+4. creates or reuses the private Space;
+5. attaches the Bucket at `/data/customer-ai`;
+6. configures Space secrets and variables;
+7. uploads the current `main` source;
+8. restarts the Space;
+9. verifies Bucket write/read/delete;
+10. waits for authenticated `/healthz` and `/readyz` responses.
+
+The deployment uses the registered Hugging Face access secret from GitHub Actions and never places GitHub in the production request path.
