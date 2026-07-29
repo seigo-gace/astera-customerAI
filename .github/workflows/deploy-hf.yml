@@ -1,11 +1,10 @@
 name: deploy-private-hf-runtime
 
 on:
-  push:
+  pull_request:
     branches: [main]
     paths:
-      - 'scripts/provision_hf.py'
-      - '.github/workflows/deploy-hf.yml'
+      - '.github/hf-deploy-trigger.txt'
   workflow_dispatch:
     inputs:
       enable_model:
@@ -55,8 +54,8 @@ jobs:
         with:
           node-version: '22.16.0'
 
-      - name: Refuse non-main deployment
-        run: test "${GITHUB_REF_NAME}" = "main"
+      - name: Refuse non-main deployment source
+        run: test "$(git branch --show-current)" = "main"
 
       - name: Install verification and deployment dependencies
         run: |
