@@ -2,6 +2,6 @@ customerai-master-v2-completed-kb
 customerai-index-v2-effective-all-records
 free-local-model=Qwen/Qwen3-0.6B
 live-story-suite=100
-trigger=2026-07-29T18:23:00+09:00
-evidence=deployment-evidence/live-story-latest.json
-mode=private-space-internal-signed-routes
+trigger=2026-07-29T18:27:00+09:00
+evidence=github-actions-artifact
+mode=observable-private-space-internal-signed-routes
