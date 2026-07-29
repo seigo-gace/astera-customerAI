@@ -70,14 +70,14 @@ def test_bundled_hp_public_snapshot_builds_and_retrieves(tmp_path: Path) -> None
     assert manifest["index_count"] == 0
 
     queries = {
-        "Asteraとは何ですか": ("外付けAI強化外装", "主役AI"),
-        "判断素材8項目": ("本当の目的", "主役AIへの再指示"),
-        "Google V8は生成AIですか": ("V8", "生成AI Model"),
-        "多重並列思考は全部同時ですか": ("並列", "依存"),
-        "判断材料をどう渡しますか": ("Copy", "Webhook"),
-        "BrowserからPrivate HFへ直接接続しますか": ("接続しません", "Cloudflare"),
-        "GatewayはCustomer AI専用ですか": ("汎用", "専用"),
-        "KBにない情報をModelで補いますか": ("補いません",),
+        "Astera": ("外付けAI強化外装", "主役AI"),
+        "判断素材 8項目": ("本当の目的", "主役AIへの再指示"),
+        "Google V8 生成AI": ("V8", "生成AI Model"),
+        "多重 並列 依存": ("並列", "依存"),
+        "判断材料 Copy Webhook": ("Copy", "Webhook"),
+        "Browser Private HF Cloudflare": ("接続しません", "Cloudflare"),
+        "Gateway Customer AI 専用 汎用": ("汎用", "専用"),
+        "KB Model 補いません": ("補いません",),
     }
     for query, terms in queries.items():
         hits = index.search(query, limit=5)
