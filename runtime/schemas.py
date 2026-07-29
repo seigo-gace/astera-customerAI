@@ -26,7 +26,7 @@ class MessagePayload(BaseModel):
     message_id: str = Field(min_length=8, max_length=160)
     message: str = Field(min_length=1, max_length=20000)
     locale: Literal["ja-JP", "en"] = "ja-JP"
-    source: Literal["astera-hp", "astera-app"]
+    source: Literal["astera-hp", "astera-app", "astera-api"]
 
     @field_validator("session_id", "message_id")
     @classmethod
