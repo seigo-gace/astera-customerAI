@@ -25,6 +25,7 @@ function baseEnv(overrides = {}) {
     WEBHOOK_INTERNAL_API_URL: 'https://gateway.example/internal/events',
     WEBHOOK_INTERNAL_API_TOKEN: 'internal-api-token',
     CUSTOMER_AI_RUNTIME_DESTINATION_ID: 'private-runtime',
+    CUSTOMER_AI_EXTERNAL_API_TOKEN: 'external-api-token',
     RESULT_WEBHOOK_SECRET: 'base64:Y3VzdG9tZXItYWktZWRnZS1yZXN1bHQtc2VjcmV0',
     CUSTOMER_AI_RESULTS: new MemoryKV(),
     RESULT_TTL_SECONDS: '3600',
@@ -69,6 +70,18 @@ function messageRequest(body = {}) {
       'x-turnstile-token': 'turnstile-token'
     },
     body: JSON.stringify({ message: 'Asteraの使い方は？', source: 'astera-hp', ...body })
+  });
+}
+
+function externalApiRequest(token = 'external-api-token', body = {}) {
+  return new Request('https://api.asterav8.jp/v1/customer-ai/messages', {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      'cf-connecting-ip': '203.0.113.20'
+    },
+    body: JSON.stringify({ message: 'API経由でAsteraを利用します。', ...body })
   });
 }
 
@@ -117,6 +130,50 @@ test('message submission uses the generic internal API and creates bounded job s
 
   const stored = await env.CUSTOMER_AI_RESULTS.get(accepted.job_id, 'json');
   assert.equal(stored.status, 'accepted');
+});
+
+test('authenticated external API request bypasses Turnstile and routes to the existing webhook API', async (t) => {
+  const env = baseEnv({ TURNSTILE_SECRET: 'turnstile-secret' });
+  let captured;
+  let calls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    calls += 1;
+    captured = { url: String(url), options };
+    return new Response(JSON.stringify({ ok: true, eventId: 'external-gateway-event-id' }), {
+      status: 202,
+      headers: { 'content-type': 'application/json' }
+    });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const response = await worker.fetch(externalApiRequest(), env);
+
+  assert.equal(response.status, 202);
+  assert.equal(calls, 1);
+  assert.equal(captured.url, env.WEBHOOK_INTERNAL_API_URL);
+  assert.equal(captured.options.headers.authorization, `Bearer ${env.WEBHOOK_INTERNAL_API_TOKEN}`);
+  const event = JSON.parse(captured.options.body);
+  assert.equal(event.eventType, 'customer.ai.message.requested');
+  assert.equal(event.destinationId, 'private-runtime');
+  assert.equal(event.data.message.source, 'astera-api');
+});
+
+test('invalid external API token is rejected before Turnstile and webhook delivery', async (t) => {
+  const env = baseEnv({ TURNSTILE_SECRET: 'turnstile-secret' });
+  const originalFetch = globalThis.fetch;
+  let called = false;
+  globalThis.fetch = async () => {
+    called = true;
+    throw new Error('must not be called');
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const response = await worker.fetch(externalApiRequest('wrong-token'), env);
+
+  assert.equal(response.status, 401);
+  assert.equal(response.headers.get('www-authenticate'), 'Bearer');
+  assert.equal(called, false);
 });
 
 test('public rate limiter rejects before Turnstile and gateway calls', async (t) => {
