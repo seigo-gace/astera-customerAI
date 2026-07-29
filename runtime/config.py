@@ -65,7 +65,7 @@ class Settings:
                 "CUSTOMER_AI_MODEL_REVISION",
                 "c1899de289a04d12100db370d81485cdf75e47ca",
             ),
-            enable_model=os.getenv("CUSTOMER_AI_ENABLE_MODEL", "1") == "1",
+            enable_model=os.getenv("CUSTOMER_AI_ENABLE_MODEL", "0") == "1",
             gpu_daily_budget_seconds=_int(
                 "CUSTOMER_AI_GPU_DAILY_BUDGET_SECONDS",
                 3600,
