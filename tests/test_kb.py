@@ -61,6 +61,77 @@ def test_private_prompt_terms_do_not_match_generic_system_wording(tmp_path: Path
     assert hits == []
 
 
+def test_index_alias_and_parent_relation_expand_public_technical_context(tmp_path: Path):
+    index = KBIndex(tmp_path)
+    pages = [
+        {
+            "id": "parent",
+            "Title": "Private Modeの技術概要",
+            "Category": "セキュリティ・プライバシー",
+            "Target_Intents": "Private Mode 構造",
+            "Definitive_Answer": "本文を残さない処理境界を定義します。",
+            "Exceptions_and_Limits": "設計段階の項目は実装済みと断定しません。",
+            "Status": "公開",
+            "_index": {
+                "Master_Title": "Private Modeの技術概要",
+                "Canonical_ID": "security.private.overview",
+                "Parent_ID": "security.private",
+                "Root_Domain": "security",
+                "Topic": "private",
+                "Subtopic": "overview",
+                "Audience": ["developer"],
+                "Answer_Level": ["technical_public"],
+                "Question_Types": ["what"],
+                "Aliases": "Private architecture",
+                "Keywords": "private mode boundary",
+                "Related_IDs": "",
+                "Content_Hash": "a" * 64,
+                "Source_Hash": "b" * 64,
+                "Version": "2026-07-29.1",
+                "Implementation_Status": "planned",
+                "Disclosure_Level": "public_technical",
+                "Index_Status": "active",
+            },
+        },
+        {
+            "id": "child",
+            "Title": "Private ModeのQueue本文はどう扱いますか？",
+            "Category": "セキュリティ・プライバシー",
+            "Target_Intents": "Queue Payload",
+            "Definitive_Answer": "QueueにはOpaque Handleだけを渡します。",
+            "Exceptions_and_Limits": "Queue実装は未完了です。",
+            "Status": "公開",
+            "_index": {
+                "Master_Title": "Private ModeのQueue本文はどう扱いますか？",
+                "Canonical_ID": "security.private.queue-handle",
+                "Parent_ID": "security.private.overview",
+                "Root_Domain": "security",
+                "Topic": "private",
+                "Subtopic": "queue-handle",
+                "Audience": ["developer"],
+                "Answer_Level": ["technical_public"],
+                "Question_Types": ["how", "security"],
+                "Aliases": "機密本文をJobへ入れるか",
+                "Keywords": "opaque handle queue payload",
+                "Related_IDs": "",
+                "Content_Hash": "c" * 64,
+                "Source_Hash": "d" * 64,
+                "Version": "2026-07-29.1",
+                "Implementation_Status": "planned",
+                "Disclosure_Level": "public_technical",
+                "Index_Status": "active",
+            },
+        },
+    ]
+    index.build_snapshot(version="indexed", pages=pages)
+
+    hits = index.search("機密本文をJobへ入れるか", limit=2)
+
+    assert [hit.kb_id for hit in hits] == ["child", "parent"]
+    manifest = json.loads((tmp_path / "kb" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["index_count"] == 2
+
+
 def test_legacy_schema_is_rejected(tmp_path: Path):
     index = KBIndex(tmp_path)
     with pytest.raises(RuntimeError, match="no publishable CustomerAI_Master_v2 pages"):
