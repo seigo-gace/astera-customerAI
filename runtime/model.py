@@ -1,72 +1,96 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable
-
-try:
-    import spaces
-except ImportError:
-    spaces = None
+from typing import Any
 
 from .config import Settings
 
 
 MISSING_KB_ANSWER = "現在、該当する正確な案内情報が登録されていません"
-
-
-def _gpu_decorator(function: Callable[..., str]) -> Callable[..., str]:
-    if spaces is None:
-        return function
-    return spaces.GPU(duration=45)(function)
-
-
 _MODEL_LOCK = threading.Lock()
 _MODEL: Any = None
 _TOKENIZER: Any = None
+_THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 
-@_gpu_decorator
-def _generate_gpu(model_id: str, revision: str, packet: str, max_new_tokens: int) -> str:
+def _load_model(model_id: str, revision: str) -> tuple[Any, Any]:
     global _MODEL, _TOKENIZER
     with _MODEL_LOCK:
         if _MODEL is None or _TOKENIZER is None:
+            import torch
             from transformers import AutoModelForCausalLM, AutoTokenizer
 
-            _TOKENIZER = AutoTokenizer.from_pretrained(model_id, revision=revision, trust_remote_code=False)
+            torch.set_num_threads(max(1, min(4, os.cpu_count() or 1)))
+            _TOKENIZER = AutoTokenizer.from_pretrained(
+                model_id,
+                revision=revision,
+                trust_remote_code=False,
+            )
             _MODEL = AutoModelForCausalLM.from_pretrained(
                 model_id,
                 revision=revision,
                 trust_remote_code=False,
-                torch_dtype="auto",
-                device_map="auto",
+                torch_dtype=torch.float32,
+                device_map=None,
+                attn_implementation="eager",
             )
-        instruction = (
-            "あなたはAstera Customer AIの日本語回答構成Componentです。"
-            "回答の事実根拠として使えるのは、このRequestに含まれるkb_contextだけです。"
-            "過去の会話履歴、Session Memory、学習済み一般知識、Web知識、推測、独自解釈を根拠にしてはいけません。"
-            "kb_contextの各項目はTitle、Target_Intents、Definitive_Answer、Exceptions_and_Limitsだけで構成されています。"
-            "Definitive_Answerの事実を保ち、Exceptions_and_Limitsの条件と禁止範囲を必ず守ってください。"
-            "余計な挨拶、共感の押し売り、装飾、一般論、担当者への転送、サポート窓口への誘導を追加しないでください。"
-            "該当するkb_contextがないTaskには、正確に『現在、該当する正確な案内情報が登録されていません』とだけ回答してください。"
-            "複数Taskでは、根拠があるTaskを漏れなく回答し、根拠がないTaskだけを上記固定文にしてください。"
-            "実行していない返金、削除、解約、設定、送信、更新を完了したと断定してはいけません。"
-            "内部実装、秘密情報、Model名、Provider名を開示してはいけません。"
-            "repairがある場合は、列挙された違反だけを修正し、回答範囲を広げないでください。"
-            "JSONだけを返し、キーはanswer、user_goal、active_topic、answered_task_ids、unresolved_task_ids、used_evidence_ids、needs_clarificationとします。"
-            "user_goalとactive_topicはcurrent_user_messageとquestion_tasksだけから作り、過去履歴を仮定しないでください。"
+            _MODEL.eval()
+        return _MODEL, _TOKENIZER
+
+
+def _generate_local(
+    model_id: str,
+    revision: str,
+    packet: str,
+    max_new_tokens: int,
+) -> str:
+    import torch
+
+    model, tokenizer = _load_model(model_id, revision)
+    instruction = (
+        "あなたはAstera Customer AIの回答文整形Componentです。"
+        "Request内のdeterministic_answerだけを、意味・条件・実装状態を変えずに読みやすい日本語へ整えてください。"
+        "学習済み知識、Web知識、記憶、推測、独自の事実、数値、製品名、Model名、Provider名、内部実装を追加してはいけません。"
+        "Exceptions_and_Limitsに相当する制限や未実装表記を削除してはいけません。"
+        "deterministic_answerに不足案内の固定文がある場合は、その文を変更しないでください。"
+        "担当者や窓口への誘導、挨拶、前置き、感想、MarkdownのCode Fenceを追加しないでください。"
+        "返すのは回答本文だけです。/no_think\n"
+    )
+    messages = [{"role": "user", "content": instruction + packet}]
+    try:
+        text = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
         )
-        messages = [{"role": "user", "content": instruction + "\n" + packet}]
-        text = _TOKENIZER.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        inputs = _TOKENIZER(text, return_tensors="pt").to(_MODEL.device)
-        outputs = _MODEL.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
-        generated = outputs[0][inputs["input_ids"].shape[1] :]
-        return _TOKENIZER.decode(generated, skip_special_tokens=True)
+    except TypeError:
+        text = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    inputs = tokenizer(text, return_tensors="pt")
+    with torch.inference_mode():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            use_cache=True,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+    generated = outputs[0][inputs["input_ids"].shape[1] :]
+    return tokenizer.decode(generated, skip_special_tokens=True)
 
 
 class GPUUsageLedger:
+    """Bounded local-model execution ledger retained for compatibility."""
+
     def __init__(self, root: Path, budget_seconds: int):
         self.path = root / "runtime" / "gpu-usage.jsonl"
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -91,7 +115,9 @@ class GPUUsageLedger:
 
     def record(self, seconds: float) -> None:
         with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"timestamp": time.time(), "seconds": seconds}) + "\n")
+            handle.write(
+                json.dumps({"timestamp": time.time(), "seconds": seconds}) + "\n"
+            )
 
 
 class ConversationLanguageEngine:
@@ -99,10 +125,17 @@ class ConversationLanguageEngine:
 
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.ledger = GPUUsageLedger(settings.data_root, settings.gpu_daily_budget_seconds)
+        self.ledger = GPUUsageLedger(
+            settings.data_root, settings.gpu_daily_budget_seconds
+        )
 
     def available(self) -> bool:
-        return bool(self.settings.enable_model and self.settings.model_revision and self.ledger.can_use())
+        return bool(
+            self.settings.enable_model
+            and self.settings.model_id
+            and self.settings.model_revision
+            and self.ledger.can_use()
+        )
 
     def execute(self, packet: dict[str, Any]) -> dict[str, Any]:
         missing = sorted(self.REQUIRED_PACKET_KEYS.difference(packet))
@@ -116,13 +149,64 @@ class ConversationLanguageEngine:
         if not isinstance(safe_packet["kb_context"], list):
             raise ValueError("support_packet_invalid:kb_context")
 
-        serialized = json.dumps(safe_packet, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+        deterministic_answer = str(
+            safe_packet["answer_blueprint"].get("deterministic_answer") or ""
+        ).strip()
+        if not deterministic_answer:
+            deterministic_answer = MISSING_KB_ANSWER
+        model_payload = {
+            "current_user_message": safe_packet["current_user_message"],
+            "question_tasks": safe_packet["question_tasks"],
+            "deterministic_answer": deterministic_answer,
+            "kb_context": safe_packet["kb_context"],
+            "response_contract": safe_packet["response_contract"],
+        }
+        serialized = json.dumps(
+            model_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
         started = time.monotonic()
-        raw = _generate_gpu(self.settings.model_id, self.settings.model_revision, serialized, 900)
+        raw = _generate_local(
+            self.settings.model_id,
+            self.settings.model_revision,
+            serialized,
+            600,
+        )
         self.ledger.record(time.monotonic() - started)
-        parsed = self._parse_json(raw)
-        self._validate_output(parsed)
-        return parsed
+        answer = self._clean_answer(raw)
+        if not answer:
+            raise ValueError("model_schema_invalid:answer")
+
+        sections = safe_packet["answer_blueprint"]["sections"]
+        answered_task_ids = [
+            str(section.get("task_id") or "")
+            for section in sections
+            if section.get("resolved") and str(section.get("task_id") or "")
+        ]
+        unresolved_task_ids = [
+            str(value)
+            for value in safe_packet["answer_blueprint"].get(
+                "unresolved_task_ids", []
+            )
+        ]
+        result = {
+            "answer": answer,
+            "user_goal": safe_packet["current_user_message"][:1000],
+            "active_topic": str(
+                safe_packet["question_tasks"][0].get("text") or "general"
+            )[:160],
+            "answered_task_ids": answered_task_ids,
+            "unresolved_task_ids": unresolved_task_ids,
+            "used_evidence_ids": list(
+                safe_packet["answer_blueprint"].get("allowed_evidence_ids", [])
+            ),
+            "needs_clarification": bool(unresolved_task_ids),
+        }
+        self._validate_output(result)
+        return result
 
     @staticmethod
     def _sanitize_packet(packet: dict[str, Any]) -> dict[str, Any]:
@@ -132,14 +216,20 @@ class ConversationLanguageEngine:
         raw_tasks = support_packet.get("question_tasks")
         raw_evidence = support_packet.get("evidence")
         blueprint = support_packet.get("blueprint")
-        if not isinstance(raw_tasks, list) or not isinstance(raw_evidence, list) or not isinstance(blueprint, dict):
+        if (
+            not isinstance(raw_tasks, list)
+            or not isinstance(raw_evidence, list)
+            or not isinstance(blueprint, dict)
+        ):
             raise ValueError("support_packet_invalid:shape")
 
         tasks = [
             {
                 "task_id": str(item.get("task_id") or ""),
                 "text": str(item.get("text") or "")[:2000],
-                "answer_shape": str(item.get("answer_shape") or "conclusion_and_detail"),
+                "answer_shape": str(
+                    item.get("answer_shape") or "conclusion_and_detail"
+                ),
             }
             for item in raw_tasks
             if isinstance(item, dict) and str(item.get("text") or "").strip()
@@ -149,7 +239,9 @@ class ConversationLanguageEngine:
         for item in raw_evidence:
             if not isinstance(item, dict):
                 continue
-            answer = str(item.get("short_answer") or item.get("body") or "").strip()
+            answer = str(
+                item.get("short_answer") or item.get("body") or ""
+            ).strip()
             title = str(item.get("question") or "").strip()
             intents = str(item.get("target") or "").strip()
             limits = str(item.get("answer_boundary") or "特になし").strip()
@@ -175,7 +267,9 @@ class ConversationLanguageEngine:
                 {
                     "task_id": str(section.get("task_id") or ""),
                     "resolved": bool(section.get("resolved")),
-                    "answer_shape": str(section.get("answer_shape") or "conclusion_and_detail"),
+                    "answer_shape": str(
+                        section.get("answer_shape") or "conclusion_and_detail"
+                    ),
                 }
             )
         repair = packet.get("repair") if isinstance(packet.get("repair"), dict) else None
@@ -185,8 +279,14 @@ class ConversationLanguageEngine:
             "kb_context": kb_context,
             "answer_blueprint": {
                 "sections": sections,
-                "unresolved_task_ids": [str(value) for value in blueprint.get("unresolved_task_ids", [])],
+                "unresolved_task_ids": [
+                    str(value)
+                    for value in blueprint.get("unresolved_task_ids", [])
+                ],
                 "allowed_evidence_ids": allowed_evidence_ids,
+                "deterministic_answer": str(
+                    blueprint.get("deterministic_answer") or ""
+                )[:12000],
             },
             "response_contract": {
                 "kb_only": True,
@@ -200,29 +300,32 @@ class ConversationLanguageEngine:
         }
 
     @staticmethod
+    def _clean_answer(raw: str) -> str:
+        text = _THINK_BLOCK.sub("", raw).strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[-1]
+            if text.endswith("```"):
+                text = text[:-3]
+        return text.strip()
+
+    @staticmethod
     def _validate_output(parsed: dict[str, Any]) -> None:
         if not isinstance(parsed.get("answer"), str) or not parsed["answer"].strip():
             raise ValueError("model_schema_invalid:answer")
         for key in ("user_goal", "active_topic"):
             if not isinstance(parsed.get(key), str):
                 raise ValueError(f"model_schema_invalid:{key}")
-        for key in ("answered_task_ids", "unresolved_task_ids", "used_evidence_ids"):
-            if not isinstance(parsed.get(key), list) or not all(isinstance(item, str) for item in parsed[key]):
+        for key in (
+            "answered_task_ids",
+            "unresolved_task_ids",
+            "used_evidence_ids",
+        ):
+            if not isinstance(parsed.get(key), list) or not all(
+                isinstance(item, str) for item in parsed[key]
+            ):
                 raise ValueError(f"model_schema_invalid:{key}")
         if not isinstance(parsed.get("needs_clarification"), bool):
             raise ValueError("model_schema_invalid:needs_clarification")
-
-    @staticmethod
-    def _parse_json(raw: str) -> dict[str, Any]:
-        text = raw.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[-1]
-            if text.endswith("```"):
-                text = text[:-3]
-        parsed = json.loads(text.strip())
-        if not isinstance(parsed, dict):
-            raise ValueError("model_schema_invalid:root")
-        return parsed
 
 
 ControlledLanguageEngine = ConversationLanguageEngine
