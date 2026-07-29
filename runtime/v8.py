@@ -11,7 +11,7 @@ import tarfile
 import time
 import urllib.request
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .config import Settings
@@ -82,12 +82,18 @@ class NodeBootstrap:
         temp_root.mkdir(parents=True, exist_ok=True)
         with tarfile.open(archive, mode="r:xz") as package:
             members = package.getmembers()
-            prefix = f"node-v{NODE_VERSION}-{flavor}/"
+            archive_root = f"node-v{NODE_VERSION}-{flavor}"
             for member in members:
-                if not member.name.startswith(prefix) or ".." in Path(member.name).parts:
+                member_path = PurePosixPath(member.name)
+                if (
+                    member_path.is_absolute()
+                    or not member_path.parts
+                    or member_path.parts[0] != archive_root
+                    or ".." in member_path.parts
+                ):
                     raise V8Unavailable("unsafe Node.js archive path")
             package.extractall(temp_root, filter="data")
-        extracted = temp_root / f"node-v{NODE_VERSION}-{flavor}"
+        extracted = temp_root / archive_root
         shutil.rmtree(local_root, ignore_errors=True)
         os.replace(extracted, local_root)
         shutil.rmtree(temp_root, ignore_errors=True)
