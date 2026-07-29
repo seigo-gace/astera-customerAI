@@ -25,7 +25,7 @@ MODEL_REVISION = os.environ.get(
     "cdbee75f17c01a7cc42f958dc650907174af0554",
 )
 
-REQUIRED_RUNTIME_SECRETS = (
+RUNTIME_SECRETS = (
     "CUSTOMER_AI_HMAC_SECRET",
     "INTERNAL_EVENT_API_URL",
     "INTERNAL_EVENT_API_TOKEN",
@@ -34,19 +34,24 @@ REQUIRED_RUNTIME_SECRETS = (
 )
 
 
-def required_environment() -> dict[str, str]:
+def runtime_environment() -> dict[str, str]:
     if not TOKEN:
         raise SystemExit("HF_TOKEN_MISSING")
+
     values: dict[str, str] = {}
     missing: list[str] = []
-    for name in REQUIRED_RUNTIME_SECRETS:
+    for name in RUNTIME_SECRETS:
         value = os.environ.get(name, "").strip()
-        if not value:
-            missing.append(name)
-        else:
+        if value:
             values[name] = value
+        else:
+            missing.append(name)
+
     if missing:
-        raise SystemExit("HF_RUNTIME_SECRET_MISSING:" + ",".join(missing))
+        # upload_folder and Space configuration do not delete existing HF secrets.
+        # Missing GitHub secrets are therefore left untouched so an existing Space
+        # can retain its current runtime credentials during a code-only deployment.
+        print("HF_RUNTIME_SECRETS_PRESERVED=" + ",".join(missing))
     return values
 
 
@@ -114,7 +119,7 @@ def wait_for_space(api: HfApi) -> None:
 
 
 def main() -> None:
-    runtime_secrets = required_environment()
+    runtime_secrets = runtime_environment()
     api = HfApi(token=TOKEN)
     identity = api.whoami()
     print(f"HF_AUTHENTICATED_AS={identity.get('name') or identity.get('fullname')}")
