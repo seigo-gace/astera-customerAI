@@ -13,6 +13,9 @@ from runtime.service import CustomerAIService
 from runtime.storage import ConflictError
 
 
+MISSING_KB_ANSWER = "現在、該当する正確な案内情報が登録されていません"
+
+
 def page(
     kb_id: str,
     question: str,
@@ -26,19 +29,21 @@ def page(
     target: list[str] | None = None,
     boundary: str = "",
 ) -> dict:
+    status = public_status
+    if implementation_status not in {"実装済み", "文書確認済み"} or needs_review:
+        status = "要確認"
+    category = "トラブルシューティング" if "反映" in question else "製品・概要"
+    intents = "\n".join([search_terms, *(target or [])]).strip()
+    answer = "\n".join(part for part in (short_answer, body) if part).strip()
     return {
         "id": kb_id,
-        "質問": question,
-        "短い回答": short_answer,
-        "本文": body,
-        "検索語": search_terms,
-        "回答境界": boundary,
-        "対象": target or ["一般利用者"],
-        "公開状態": public_status,
-        "実装状態": implementation_status,
-        "要再確認": needs_review,
+        "Title": question,
+        "Category": category,
+        "Target_Intents": intents,
+        "Definitive_Answer": answer,
+        "Exceptions_and_Limits": boundary or "特になし",
+        "Status": status,
         "url": f"notion://{kb_id}",
-        "確認日": "2026-07-27",
     }
 
 
@@ -149,7 +154,7 @@ def make_event(
     )
 
 
-async def prepare_service(data_root: Path, *, version: str = "story-v1") -> CustomerAIService:
+async def prepare_service(data_root: Path, *, version: str = "story-v2") -> CustomerAIService:
     service = CustomerAIService(Settings.load())
     service.kb.build_snapshot(version=version, pages=story_pages())
     service.kb.open()
@@ -260,9 +265,10 @@ async def test_story_unknown_price_is_not_invented_from_unpublished_pages(data_r
     assert hits == []
     assert result["status"] == "awaiting_clarification"
     assert result["execution"]["unresolved_task_ids"] == ["q1"]
+    assert result["answer"] == MISSING_KB_ANSWER
+    assert result["clarification"] == MISSING_KB_ANSWER
     assert "円" not in result["answer"]
     assert "お問い合わせください" not in result["answer"]
-    assert "対象プラン" in result["answer"]
 
 
 @pytest.mark.asyncio
@@ -282,6 +288,7 @@ async def test_story_internal_kb_page_is_filtered_and_private_details_are_not_re
     assert hits == []
     assert "/internal/admin" not in result["answer"]
     assert ".env" not in result["answer"]
+    assert result["answer"] == MISSING_KB_ANSWER
     assert result["status"] == "awaiting_clarification"
 
 
@@ -305,7 +312,12 @@ async def test_story_feedback_redacts_pii_deduplicates_and_never_auto_publishes(
         await service.shutdown()
 
     files = sorted((data_root / "feedback").glob("*.jsonl"))
-    rows = [json.loads(line) for path in files for line in path.read_text(encoding="utf-8").splitlines() if line]
+    rows = [
+        json.loads(line)
+        for path in files
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
     assert first["feedback_candidate_id"] is not None
     assert second["feedback_candidate_id"] is None
     assert len(rows) == 1
@@ -355,19 +367,29 @@ async def test_story_concurrent_unique_sessions_complete_without_state_cross_con
                 job_id=f"job_story_load_{index}",
                 session_id=f"session_story_load_{index}",
                 message_id=f"message_story_load_{index}",
-                message="Asteraとは何ですか？" if index % 2 == 0 else "アカウントを削除する方法を教えてください",
+                message=(
+                    "Asteraとは何ですか？"
+                    if index % 2 == 0
+                    else "アカウントを削除する方法を教えてください"
+                ),
             )
             await service.accept(event)
             events.append(event)
-        results = await asyncio.gather(*(service.process_job(str(event.data["job_id"])) for event in events))
+        results = await asyncio.gather(
+            *(service.process_job(str(event.data["job_id"])) for event in events)
+        )
     finally:
         await service.shutdown()
 
     assert len(results) == 24
     assert all(result["status"] == "completed" for result in results)
     assert all(result["execution"]["unresolved_task_ids"] == [] for result in results)
-    astera_answers = [result["answer"] for index, result in enumerate(results) if index % 2 == 0]
-    account_answers = [result["answer"] for index, result in enumerate(results) if index % 2 == 1]
+    astera_answers = [
+        result["answer"] for index, result in enumerate(results) if index % 2 == 0
+    ]
+    account_answers = [
+        result["answer"] for index, result in enumerate(results) if index % 2 == 1
+    ]
     assert all("判断材料" in answer for answer in astera_answers)
     assert all("アカウントページ" in answer for answer in account_answers)
     assert all("アカウントページ" not in answer for answer in astera_answers)
@@ -408,4 +430,7 @@ async def test_story_many_japanese_variants_remain_bounded_and_do_not_crash(data
     assert all(result["answer"].strip() for result in results)
     assert all(1 <= len(result["question_tasks"]) <= 8 for result in results)
     assert all(len(result["answer"]) <= 8000 for result in results)
-    assert all(result["status"] in {"completed", "awaiting_clarification"} for result in results)
+    assert all(
+        result["status"] in {"completed", "awaiting_clarification"}
+        for result in results
+    )
