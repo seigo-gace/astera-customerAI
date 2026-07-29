@@ -34,7 +34,7 @@ jobs:
       CUSTOMER_AI_HMAC_SECRET: ${{ secrets.CUSTOMER_AI_HMAC_SECRET }}
       INTERNAL_EVENT_API_URL: ${{ secrets.INTERNAL_EVENT_API_URL }}
       INTERNAL_EVENT_API_TOKEN: ${{ secrets.INTERNAL_EVENT_API_TOKEN }}
-      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN || 'bundled:hp-public-v2' }}
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
       FULL_NOTION_SYNC_AVAILABLE: ${{ secrets.NOTION_TOKEN != '' }}
       NOTION_DATA_SOURCE_ID: d4003654-ce9a-43cb-8cb6-20401d179580
       NOTION_INDEX_DATA_SOURCE_ID: 014f4a72-e01f-41b0-9992-55be47a4aba4
@@ -75,6 +75,8 @@ jobs:
           npm run test:edge
 
       - name: Provision private Space and Bucket and deploy main
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN || 'bundled:hp-public-v2' }}
         run: python scripts/provision_hf.py
 
       - name: Synchronize full Master and run baseline live story tests
