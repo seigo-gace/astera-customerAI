@@ -6,6 +6,17 @@ from typing import Any
 import httpx
 
 
+PUBLIC_STATUS = "公開"
+V2_FIELDS = (
+    "Title",
+    "Category",
+    "Target_Intents",
+    "Definitive_Answer",
+    "Exceptions_and_Limits",
+    "Status",
+)
+
+
 class NotionSyncError(RuntimeError):
     pass
 
@@ -21,41 +32,14 @@ def _property_value(prop: dict[str, Any]) -> Any:
     value = prop.get(kind, {}) if kind else None
     if kind in {"title", "rich_text"}:
         return _rich_text(value)
-    if kind == "select":
+    if kind in {"select", "status"}:
         return (value or {}).get("name", "")
-    if kind == "multi_select":
-        return [item.get("name", "") for item in (value or [])]
-    if kind == "checkbox":
-        return bool(value)
-    if kind == "date":
-        return (value or {}).get("start", "")
-    if kind == "url":
-        return value or ""
-    if kind == "status":
-        return (value or {}).get("name", "")
-    if kind == "number":
-        return value
-    if kind == "formula":
-        formula_type = (value or {}).get("type")
-        return (value or {}).get(formula_type) if formula_type else None
     return value
 
 
-def _block_text(block: dict[str, Any]) -> str:
-    kind = block.get("type")
-    payload = block.get(kind, {}) if kind else {}
-    text = _rich_text(payload.get("rich_text", []))
-    if kind in {"bulleted_list_item", "numbered_list_item", "to_do"} and text:
-        return f"- {text}"
-    if kind and kind.startswith("heading_") and text:
-        return f"## {text}"
-    if kind == "code" and text:
-        language = payload.get("language", "text")
-        return f"```{language}\n{text}\n```"
-    return text
-
-
 class NotionClient:
+    """Reads only the strict CustomerAI_Master_v2 property contract."""
+
     def __init__(self, token: str, data_source_id: str, *, timeout_seconds: int = 20):
         self.token = token
         self.data_source_id = data_source_id
@@ -71,32 +55,29 @@ class NotionClient:
             raise NotionSyncError("notion_not_configured")
         async with httpx.AsyncClient(timeout=self.timeout_seconds, headers=self.headers) as client:
             rows = await self._query_all(client)
-            semaphore = asyncio.Semaphore(3)
-
-            async def hydrate(row: dict[str, Any]) -> dict[str, Any]:
-                async with semaphore:
-                    content = await self._fetch_blocks(client, row["id"])
-                    properties = {
-                        name: _property_value(value)
-                        for name, value in row.get("properties", {}).items()
-                        if isinstance(value, dict)
-                    }
-                    properties.update(
-                        {
-                            "id": row["id"],
-                            "url": row.get("url", ""),
-                            "本文": content,
-                        }
-                    )
-                    return properties
-
-            return await asyncio.gather(*(hydrate(row) for row in rows))
+        pages: list[dict[str, Any]] = []
+        for row in rows:
+            source = row.get("properties", {})
+            properties = {
+                field: _property_value(source.get(field, {}))
+                for field in V2_FIELDS
+                if isinstance(source.get(field), dict)
+            }
+            properties.update({"id": row.get("id", ""), "url": row.get("url", "")})
+            pages.append(properties)
+        return pages
 
     async def _query_all(self, client: httpx.AsyncClient) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         cursor: str | None = None
         while True:
-            payload: dict[str, Any] = {"page_size": 100}
+            payload: dict[str, Any] = {
+                "page_size": 100,
+                "filter": {
+                    "property": "Status",
+                    "select": {"equals": PUBLIC_STATUS},
+                },
+            }
             if cursor:
                 payload["start_cursor"] = cursor
             response = await self._request_with_retry(
@@ -112,35 +93,6 @@ class NotionClient:
             cursor = body.get("next_cursor")
             if not cursor:
                 raise NotionSyncError("notion_missing_cursor")
-
-    async def _fetch_blocks(self, client: httpx.AsyncClient, block_id: str) -> str:
-        lines: list[str] = []
-        cursor: str | None = None
-        while True:
-            params: dict[str, Any] = {"page_size": 100}
-            if cursor:
-                params["start_cursor"] = cursor
-            response = await self._request_with_retry(
-                client,
-                "GET",
-                f"https://api.notion.com/v1/blocks/{block_id}/children",
-                params=params,
-            )
-            body = response.json()
-            for block in body.get("results", []):
-                text = _block_text(block)
-                if text:
-                    lines.append(text)
-                if block.get("has_children"):
-                    child = await self._fetch_blocks(client, block["id"])
-                    if child:
-                        lines.append(child)
-            if not body.get("has_more"):
-                break
-            cursor = body.get("next_cursor")
-            if not cursor:
-                break
-        return "\n".join(lines).strip()
 
     async def _request_with_retry(self, client: httpx.AsyncClient, method: str, url: str, **kwargs: Any) -> httpx.Response:
         delay = 1.0
