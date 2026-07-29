@@ -25,6 +25,7 @@ It is a specialized response system that must:
 - preserve the user's goal and active topic for routing without treating conversation history as factual evidence;
 - decompose documents and multi-question messages into explicit tasks;
 - search `CustomerAI_Master_v2` for each task;
+- use `CustomerAI_Index_v2` only for hierarchy, aliases, audience, question type, implementation status, and retrieval ranking;
 - bind evidence to the task it answers;
 - construct an answer blueprint before any model call;
 - use a lightweight model only when natural composition is necessary;
@@ -36,7 +37,7 @@ Astera itself is not executed. The runtime adapts the useful Astera/KAGRRA engin
 
 ## CustomerAI_Master_v2 contract
 
-The production KB is a separate Notion data source named `CustomerAI_Master_v2`.
+The production answer body is a separate Notion data source named `CustomerAI_Master_v2`.
 
 Every record has exactly these six business properties:
 
@@ -64,6 +65,24 @@ Conversation history, session memory, model knowledge, web knowledge, old KB bod
 
 It does not invent an answer or redirect the user to staff as a substitute for missing KB evidence.
 
+## CustomerAI_Index_v2 contract
+
+`CustomerAI_Index_v2` is a separate retrieval-control data source. It stores:
+
+- canonical and parent IDs;
+- root domain, topic, and subtopic;
+- aliases and retrieval keywords;
+- intended audience and answer level;
+- question types;
+- related IDs;
+- content and source hashes;
+- implementation status;
+- disclosure level and active state.
+
+The runtime physically filters `Index_Status == active` and accepts only `Disclosure_Level == public` or `public_technical`. Index metadata is written to the local SQLite snapshot for ranking and one-hop parent or related expansion. Source IDs, hashes, implementation metadata, and index-only fields never enter the language-model packet.
+
+Master records without an Index entry remain searchable through their six public fields. Index entries that do not match a published Master title are ignored.
+
 ## Processing path
 
 ```text
@@ -72,9 +91,9 @@ Current message
   -> bounded session context for routing only
   -> document/question decomposition
   -> task classification
-  -> per-task CustomerAI_Master_v2 search planning
-  -> published-property retrieval
-  -> evidence binding
+  -> Master public-record retrieval
+  -> Index metadata ranking and controlled relation expansion
+  -> evidence binding using Master answer fields only
   -> answer blueprint
   -> deterministic answer or optional KB-only model composition
   -> deterministic verification
@@ -90,7 +109,7 @@ Cloudflare Customer AI Edge
   -> Universal Webhook Gateway generic POST /internal/events
   -> Private Hugging Face Space
   -> Private Hugging Face Bucket mounted at /data/customer-ai
-  -> Notion CustomerAI_Master_v2
+  -> Notion CustomerAI_Master_v2 + CustomerAI_Index_v2
   -> Universal Webhook Gateway generic POST /internal/events
   -> Cloudflare receiver
 ```
@@ -147,7 +166,7 @@ The deployment provisions a private HF Bucket named `G-ACE/astera-customerai-dat
 Persisted files include:
 
 - bounded session routing state;
-- strict v2 KB snapshot and search cache;
+- strict v2 Master and Index SQLite snapshot and search cache;
 - feedback candidates;
 - feedback deduplication index;
 - owner-review feedback JSONL.
@@ -163,7 +182,7 @@ Qwen/Qwen3-4B-Instruct-2507
 revision: cdbee75f17c01a7cc42f958dc650907174af0554
 ```
 
-The model may compose language only from the clean v2 KB context and current question tasks. It does not own task decomposition, KB retrieval, evidence binding, verification, feedback approval, or product facts.
+The model may compose language only from the clean v2 Master KB context and current question tasks. It does not own task decomposition, KB retrieval, evidence binding, verification, feedback approval, product facts, or Index metadata.
 
 ## Important environment variables
 
@@ -171,8 +190,9 @@ The model may compose language only from the clean v2 KB context and current que
 |---|---|
 | `CUSTOMER_AI_HMAC_SECRET` | Generic Gateway request authentication |
 | `CUSTOMER_AI_DATA_ROOT` | Mounted persistent data root |
-| `NOTION_TOKEN` | `CustomerAI_Master_v2` access |
+| `NOTION_TOKEN` | Notion Master and Index access |
 | `NOTION_DATA_SOURCE_ID` | `CustomerAI_Master_v2` data source ID |
+| `NOTION_INDEX_DATA_SOURCE_ID` | `CustomerAI_Index_v2` retrieval-control data source ID |
 | `INTERNAL_EVENT_API_URL` | Generic Gateway internal event endpoint |
 | `INTERNAL_EVENT_API_TOKEN` | Gateway internal bearer token |
 | `CUSTOMER_AI_ENABLE_MODEL` | Enables optional lightweight model |
@@ -191,10 +211,10 @@ The deployment workflow:
 3. creates or reuses the private Bucket;
 4. creates or reuses the private Space;
 5. attaches the Bucket at `/data/customer-ai`;
-6. configures Space secrets and variables, including the new v2 data source ID;
+6. configures the Master and Index data source IDs;
 7. uploads the current `main` source;
 8. restarts the Space;
-9. synchronizes a fresh `CustomerAI_Master_v2` snapshot before readiness is accepted;
+9. synchronizes a fresh Master and public Index snapshot before readiness is accepted;
 10. verifies Bucket write/read/delete;
 11. waits for authenticated `/healthz` and `/readyz` responses.
 
