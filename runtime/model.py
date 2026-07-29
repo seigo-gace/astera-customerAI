@@ -14,6 +14,9 @@ except ImportError:
 from .config import Settings
 
 
+MISSING_KB_ANSWER = "現在、該当する正確な案内情報が登録されていません"
+
+
 def _gpu_decorator(function: Callable[..., str]) -> Callable[..., str]:
     if spaces is None:
         return function
@@ -41,15 +44,19 @@ def _generate_gpu(model_id: str, revision: str, packet: str, max_new_tokens: int
                 device_map="auto",
             )
         instruction = (
-            "You are only the Japanese response-composition component inside Astera Customer AI. "
-            "You do not decide product facts, routing, search, task scope, actions, or completion. "
-            "The support_packet already contains decomposed question tasks, search plans, verified KB evidence, and an answer blueprint. "
-            "Compose a specific and polite answer from that material only. Answer every question task that has evidence. "
-            "For a task without evidence, keep it in unresolved_task_ids and ask only the task-specific missing information supplied by the blueprint. "
-            "Preserve the cached user goal and active topic. Do not repeat answered questions. "
-            "Never invent product facts, reveal private implementation, identify the model/provider, or claim an action was executed. "
-            "When repair is present, correct only the listed violations and do not broaden the response. "
-            "Return JSON only with keys: answer, user_goal, active_topic, answered_task_ids, unresolved_task_ids, used_evidence_ids, needs_clarification."
+            "あなたはAstera Customer AIの日本語回答構成Componentです。"
+            "回答の事実根拠として使えるのは、このRequestに含まれるkb_contextだけです。"
+            "過去の会話履歴、Session Memory、学習済み一般知識、Web知識、推測、独自解釈を根拠にしてはいけません。"
+            "kb_contextの各項目はTitle、Target_Intents、Definitive_Answer、Exceptions_and_Limitsだけで構成されています。"
+            "Definitive_Answerの事実を保ち、Exceptions_and_Limitsの条件と禁止範囲を必ず守ってください。"
+            "余計な挨拶、共感の押し売り、装飾、一般論、担当者への転送、サポート窓口への誘導を追加しないでください。"
+            "該当するkb_contextがないTaskには、正確に『現在、該当する正確な案内情報が登録されていません』とだけ回答してください。"
+            "複数Taskでは、根拠があるTaskを漏れなく回答し、根拠がないTaskだけを上記固定文にしてください。"
+            "実行していない返金、削除、解約、設定、送信、更新を完了したと断定してはいけません。"
+            "内部実装、秘密情報、Model名、Provider名を開示してはいけません。"
+            "repairがある場合は、列挙された違反だけを修正し、回答範囲を広げないでください。"
+            "JSONだけを返し、キーはanswer、user_goal、active_topic、answered_task_ids、unresolved_task_ids、used_evidence_ids、needs_clarificationとします。"
+            "user_goalとactive_topicはcurrent_user_messageとquestion_tasksだけから作り、過去履歴を仮定しないでください。"
         )
         messages = [{"role": "user", "content": instruction + "\n" + packet}]
         text = _TOKENIZER.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -88,7 +95,7 @@ class GPUUsageLedger:
 
 
 class ConversationLanguageEngine:
-    REQUIRED_PACKET_KEYS = {"message", "conversation", "support_packet", "response_rules"}
+    REQUIRED_PACKET_KEYS = {"message", "support_packet", "response_rules"}
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -103,24 +110,94 @@ class ConversationLanguageEngine:
             raise ValueError("support_packet_missing:" + ",".join(missing))
         if not self.available():
             raise RuntimeError("model_unavailable_or_budget_exhausted")
-        support_packet = packet.get("support_packet")
-        if not isinstance(support_packet, dict):
-            raise ValueError("support_packet_invalid")
-        question_tasks = support_packet.get("question_tasks")
-        evidence = support_packet.get("evidence")
-        blueprint = support_packet.get("blueprint")
-        if not isinstance(question_tasks, list) or not question_tasks:
+        safe_packet = self._sanitize_packet(packet)
+        if not safe_packet["question_tasks"]:
             raise ValueError("support_packet_invalid:question_tasks")
-        if not isinstance(evidence, list) or not isinstance(blueprint, dict):
-            raise ValueError("support_packet_invalid:evidence_or_blueprint")
+        if not isinstance(safe_packet["kb_context"], list):
+            raise ValueError("support_packet_invalid:kb_context")
 
-        serialized = json.dumps(packet, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+        serialized = json.dumps(safe_packet, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
         started = time.monotonic()
         raw = _generate_gpu(self.settings.model_id, self.settings.model_revision, serialized, 900)
         self.ledger.record(time.monotonic() - started)
         parsed = self._parse_json(raw)
         self._validate_output(parsed)
         return parsed
+
+    @staticmethod
+    def _sanitize_packet(packet: dict[str, Any]) -> dict[str, Any]:
+        support_packet = packet.get("support_packet")
+        if not isinstance(support_packet, dict):
+            raise ValueError("support_packet_invalid")
+        raw_tasks = support_packet.get("question_tasks")
+        raw_evidence = support_packet.get("evidence")
+        blueprint = support_packet.get("blueprint")
+        if not isinstance(raw_tasks, list) or not isinstance(raw_evidence, list) or not isinstance(blueprint, dict):
+            raise ValueError("support_packet_invalid:shape")
+
+        tasks = [
+            {
+                "task_id": str(item.get("task_id") or ""),
+                "text": str(item.get("text") or "")[:2000],
+                "answer_shape": str(item.get("answer_shape") or "conclusion_and_detail"),
+            }
+            for item in raw_tasks
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        ]
+        kb_context = []
+        allowed_evidence_ids = []
+        for item in raw_evidence:
+            if not isinstance(item, dict):
+                continue
+            answer = str(item.get("short_answer") or item.get("body") or "").strip()
+            title = str(item.get("question") or "").strip()
+            intents = str(item.get("target") or "").strip()
+            limits = str(item.get("answer_boundary") or "特になし").strip()
+            if not title or not intents or not answer or not limits:
+                continue
+            kb_context.append(
+                {
+                    "Title": title[:1000],
+                    "Target_Intents": intents[:3000],
+                    "Definitive_Answer": answer[:6000],
+                    "Exceptions_and_Limits": limits[:3000],
+                }
+            )
+            evidence_id = str(item.get("evidence_id") or "")
+            if evidence_id:
+                allowed_evidence_ids.append(evidence_id)
+
+        sections = []
+        for section in blueprint.get("sections", []):
+            if not isinstance(section, dict):
+                continue
+            sections.append(
+                {
+                    "task_id": str(section.get("task_id") or ""),
+                    "resolved": bool(section.get("resolved")),
+                    "answer_shape": str(section.get("answer_shape") or "conclusion_and_detail"),
+                }
+            )
+        repair = packet.get("repair") if isinstance(packet.get("repair"), dict) else None
+        return {
+            "current_user_message": str(packet.get("message") or "")[:8000],
+            "question_tasks": tasks,
+            "kb_context": kb_context,
+            "answer_blueprint": {
+                "sections": sections,
+                "unresolved_task_ids": [str(value) for value in blueprint.get("unresolved_task_ids", [])],
+                "allowed_evidence_ids": allowed_evidence_ids,
+            },
+            "response_contract": {
+                "kb_only": True,
+                "no_history_or_memory": True,
+                "no_general_knowledge": True,
+                "no_speculation_or_decoration": True,
+                "no_escalation": True,
+                "missing_kb_answer": MISSING_KB_ANSWER,
+            },
+            "repair": repair,
+        }
 
     @staticmethod
     def _validate_output(parsed: dict[str, Any]) -> None:
