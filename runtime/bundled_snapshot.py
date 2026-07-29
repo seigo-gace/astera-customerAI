@@ -23,7 +23,9 @@ REQUIRED_FIELDS = (
 def _bundle_path() -> Path:
     configured = os.getenv("CUSTOMER_AI_BUNDLED_KB_PATH", "").strip()
     if configured:
-        return Path(configured)
+        candidate = Path(configured)
+        if candidate.exists():
+            return candidate
     return Path(__file__).resolve().parents[1] / "kb" / "bundled-hp-public-v2.json"
 
 
