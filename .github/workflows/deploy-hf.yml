@@ -15,7 +15,7 @@ on:
       - '.deploy/customer-ai-free-model'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: deploy-private-hf-runtime
@@ -87,19 +87,60 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+      - name: Persist latest deployment evidence
+        if: always()
+        env:
+          WORKFLOW_STATUS: ${{ job.status }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+        run: |
+          mkdir -p deployment-evidence
+          python - <<'PY'
+          import json
+          import os
+          from datetime import UTC, datetime
+          from pathlib import Path
+
+          source = Path('test-results/live-story-report.json')
+          if source.exists():
+              report = json.loads(source.read_text(encoding='utf-8'))
+          else:
+              report = {
+                  'accepted': False,
+                  'total': 0,
+                  'passed': 0,
+                  'failed': 0,
+                  'score_percent': 0.0,
+                  'free_model_invoked': False,
+                  'failure_stage': 'before_live_story_report',
+              }
+          report['workflow_status'] = os.environ['WORKFLOW_STATUS']
+          report['workflow_run_id'] = os.environ['WORKFLOW_RUN_ID']
+          report['workflow_sha'] = os.environ['GITHUB_SHA']
+          report['evidence_persisted_at'] = datetime.now(UTC).isoformat()
+          Path('deployment-evidence/live-story-latest.json').write_text(
+              json.dumps(report, ensure_ascii=False, indent=2),
+              encoding='utf-8',
+          )
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add deployment-evidence/live-story-latest.json
+          git commit -m "chore: record latest Customer AI live verification" || true
+          git pull --rebase origin main
+          git push origin HEAD:main
+
       - name: Deployment summary
         if: always()
         run: |
-          {
-            echo '## Private HF deployment and live verification'
-            echo '- Space: G-ACE/astera-customerAI'
-            echo '- Bucket: G-ACE/astera-customerai-data'
-            echo '- Mount: /data/customer-ai'
-            echo "- Free local model: ${CUSTOMER_AI_MODEL_ID}"
-            echo "- Model enabled: ${CUSTOMER_AI_ENABLE_MODEL}"
-            echo "- GitHub SHA: ${GITHUB_SHA}"
-            if test -f test-results/live-story-report.json; then
-              python - <<'PY'
+          echo '## Private HF deployment and live verification' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Space: G-ACE/astera-customerAI' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Bucket: G-ACE/astera-customerai-data' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Mount: /data/customer-ai' >> "$GITHUB_STEP_SUMMARY"
+          echo "- Free local model: ${CUSTOMER_AI_MODEL_ID}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Model enabled: ${CUSTOMER_AI_ENABLE_MODEL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- GitHub SHA: ${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"
+          if test -f test-results/live-story-report.json; then
+            python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
           from pathlib import Path
           report = json.loads(Path('test-results/live-story-report.json').read_text())
@@ -107,5 +148,4 @@ jobs:
           print(f"- Free model invoked: {report['free_model_invoked']}")
           print(f"- KB source pages: {report['kb_sync']['source_pages']}")
           PY
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          fi
