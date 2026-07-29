@@ -15,7 +15,7 @@ function corsHeaders(request, env) {
   return {
     "access-control-allow-origin": origin,
     "access-control-allow-methods": "GET,POST,OPTIONS",
-    "access-control-allow-headers": "content-type,x-turnstile-token,x-astera-source,x-request-id",
+    "access-control-allow-headers": "authorization,content-type,x-turnstile-token,x-astera-source,x-request-id",
     "access-control-max-age": "86400",
     vary: "Origin"
   };
@@ -40,6 +40,25 @@ function textSafeEqual(left, right) {
   let difference = 0;
   for (let index = 0; index < a.length; index += 1) difference |= a[index] ^ b[index];
   return difference === 0;
+}
+
+function bearerToken(request) {
+  const authorization = request.headers.get("authorization") || "";
+  if (!authorization) return "";
+  if (authorization.length > 4096) return null;
+  const match = authorization.match(/^Bearer\s+([^\s]+)$/i);
+  return match ? match[1] : null;
+}
+
+function externalApiAuthorization(request, env) {
+  const authorization = request.headers.get("authorization") || "";
+  if (!authorization) return { attempted: false, authorized: false };
+  const token = bearerToken(request);
+  const expected = String(env.CUSTOMER_AI_EXTERNAL_API_TOKEN || "");
+  return {
+    attempted: true,
+    authorized: Boolean(token && expected && textSafeEqual(token, expected))
+  };
 }
 
 async function bodyJson(request, maxBytes = 32768) {
@@ -123,10 +142,17 @@ async function submitMessage(request, env) {
   if (!(await checkPublicRateLimit(request, env))) {
     return json({ error: "rate_limited", retry_after_seconds: 60 }, 429, { "retry-after": "60" });
   }
+
+  const apiAuthorization = externalApiAuthorization(request, env);
+  if (apiAuthorization.attempted && !apiAuthorization.authorized) {
+    return json({ error: "invalid_api_token" }, 401, { "www-authenticate": "Bearer" });
+  }
+
   const remoteIp = request.headers.get("cf-connecting-ip") || "";
-  if (!(await verifyTurnstile(request, env, remoteIp))) {
+  if (!apiAuthorization.authorized && !(await verifyTurnstile(request, env, remoteIp))) {
     return json({ error: "turnstile_failed" }, 403);
   }
+
   const input = await bodyJson(request, Number(env.MAX_INPUT_BYTES || 32768));
   const message = String(input.message || "").trim();
   if (!message) return json({ error: "message_required" }, 422);
@@ -134,7 +160,9 @@ async function submitMessage(request, env) {
     return json({ error: "message_too_large" }, 413);
   }
 
-  const source = input.source === "astera-app" ? "astera-app" : "astera-hp";
+  const source = apiAuthorization.authorized
+    ? "astera-api"
+    : input.source === "astera-app" ? "astera-app" : "astera-hp";
   const sessionId = isId(input.session_id, "session") ? input.session_id : id("session");
   const messageId = isId(input.message_id, "message") ? input.message_id : id("message");
   const jobId = isId(input.job_id, "job") ? input.job_id : id("job");
