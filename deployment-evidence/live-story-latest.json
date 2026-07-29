@@ -5,9 +5,11 @@
   "failed": 0,
   "score_percent": 0.0,
   "free_model_invoked": false,
-  "failure_stage": "before_baseline_live_story_report",
+  "failure_stage": "full_master_notion_token_missing",
+  "verification_scope": "full_customerai_master_v2",
+  "finished_at": "2026-07-29T13:59:41.149535+00:00",
   "workflow_status": "failure",
-  "workflow_run_id": "30457165765",
-  "workflow_sha": "32f7375882072d69812b38ba0c8ef616b18ff8e2",
-  "evidence_persisted_at": "2026-07-29T13:43:00.138608+00:00"
+  "workflow_run_id": "30458269214",
+  "workflow_sha": "4d1e86831ecdedb419a1420985356e9c55082c4d",
+  "evidence_persisted_at": "2026-07-29T14:04:16.687552+00:00"
 }
