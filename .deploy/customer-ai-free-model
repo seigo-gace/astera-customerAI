@@ -2,4 +2,5 @@ customerai-master-v2-completed-kb
 customerai-index-v2-effective-all-records
 free-local-model=Qwen/Qwen3-0.6B
 live-story-suite=100
-trigger=2026-07-29T17:49:00+09:00
+trigger=2026-07-29T17:55:00+09:00
+evidence=deployment-evidence/live-story-latest.json
