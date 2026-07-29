@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN || secrets.HF_KEY }}
       HF_NAMESPACE: G-ACE
       HF_SPACE_NAME: astera-customerAI
       HF_BUCKET_NAME: astera-customerai-data
@@ -46,24 +46,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
-
-      - name: Verify required GitHub secret names
-        env:
-          ACTIONS_SECRETS_JSON: ${{ toJSON(secrets) }}
-        run: |
-          python - <<'PY'
-          import json
-          import os
-
-          names = sorted(json.loads(os.environ.get("ACTIONS_SECRETS_JSON") or "{}").keys())
-          print("ACTIONS_SECRET_NAMES=" + ",".join(names))
-          if "HF_TOKEN" not in names:
-              raise SystemExit("HF_TOKEN_SECRET_NAME_NOT_VISIBLE")
-          if not os.environ.get("HF_TOKEN"):
-              raise SystemExit("HF_TOKEN_SECRET_VALUE_EMPTY")
-          print("HF_TOKEN_SECRET_VISIBLE")
-          PY
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
