@@ -28,7 +28,13 @@ async def lifespan(_: FastAPI):
     await service.shutdown()
 
 
-api = FastAPI(title="Astera Customer AI", version="1.1.0", lifespan=lifespan, docs_url=None, redoc_url=None)
+api = FastAPI(
+    title="Astera Customer AI",
+    version="1.2.0",
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+)
 
 
 @api.get("/healthz")
@@ -39,13 +45,25 @@ async def healthz() -> dict[str, str]:
 @api.get("/readyz")
 async def readyz() -> JSONResponse:
     checks = service.readiness()
-    ready = checks["data_root"] and checks["v8"]
-    return JSONResponse(status_code=200 if ready else 503, content={"ready": ready, "checks": checks})
+    model_ready = not checks["model_enabled"] or checks["model_revision_pinned"]
+    ready = bool(
+        checks["data_root"]
+        and checks["v8"]
+        and checks["kb"]
+        and model_ready
+    )
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={"ready": ready, "checks": checks},
+    )
 
 
 @api.post("/internal/customer-ai/accept")
 async def accept(request: Request) -> JSONResponse:
-    if request.headers.get("content-type", "").split(";", 1)[0] not in {"application/json", "application/cloudevents+json"}:
+    if request.headers.get("content-type", "").split(";", 1)[0] not in {
+        "application/json",
+        "application/cloudevents+json",
+    }:
         raise HTTPException(status_code=415, detail="unsupported_content_type")
     declared = int(request.headers.get("content-length", "0") or 0)
     if declared > service.settings.max_input_chars * 4:
@@ -63,7 +81,10 @@ async def accept(request: Request) -> JSONResponse:
         signature,
         service.settings.hmac_secret,
     ):
-        raise HTTPException(status_code=401, detail="invalid_standard_webhook_signature")
+        raise HTTPException(
+            status_code=401,
+            detail="invalid_standard_webhook_signature",
+        )
     try:
         event = CloudEvent.model_validate_json(raw)
         record, created = await service.accept(event)
@@ -71,7 +92,10 @@ async def accept(request: Request) -> JSONResponse:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (ValueError, KeyError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return JSONResponse(status_code=202, content={"accepted": True, "created": created, "job": record})
+    return JSONResponse(
+        status_code=202,
+        content={"accepted": True, "created": created, "job": record},
+    )
 
 
 @api.get("/internal/customer-ai/jobs/{job_id}")
@@ -82,6 +106,23 @@ async def job_status(job_id: str) -> dict:
         raise HTTPException(status_code=404, detail="job_not_found") from exc
     result = service.jobs.get_result(job_id)
     return {"job": record.model_dump(mode="json"), "result": result}
+
+
+@api.post("/internal/customer-ai/jobs/{job_id}/process")
+async def process_job_endpoint(job_id: str, request: Request) -> JSONResponse:
+    raw = await request.body()
+    if not verify_hmac(
+        raw,
+        request.headers.get("x-webhook-timestamp", ""),
+        request.headers.get("x-webhook-signature", ""),
+        service.settings.hmac_secret,
+    ):
+        raise HTTPException(status_code=401, detail="invalid_signature")
+    try:
+        result = await service.process_job(job_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail="job_not_found") from exc
+    return JSONResponse(status_code=200, content=result)
 
 
 @api.post("/internal/kb/sync")
@@ -107,9 +148,17 @@ async def kb_sync(request: Request) -> JSONResponse:
     if pages is None:
         result = await service.sync_notion_kb(version)
     elif isinstance(pages, list):
-        info = await asyncio.to_thread(service.kb.build_snapshot, version=version, pages=pages)
+        info = await asyncio.to_thread(
+            service.kb.build_snapshot,
+            version=version,
+            pages=pages,
+        )
         service.kb.open()
-        result = {"version": info.version, "path": str(info.path), "source_pages": len(pages)}
+        result = {
+            "version": info.version,
+            "path": str(info.path),
+            "source_pages": len(pages),
+        }
     else:
         raise HTTPException(status_code=422, detail="pages_must_be_list")
     return JSONResponse(status_code=202, content=result)
