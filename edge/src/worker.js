@@ -115,6 +115,45 @@ function base64(bytes) {
   return btoa(value);
 }
 
+function hex(bytes) {
+  return [...new Uint8Array(bytes)].map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+async function signStandardWebhook(rawBody, eventId, timestamp, secret) {
+  const keyBytes = decodeSecret(secret);
+  if (!keyBytes.length) throw new Error("RUNTIME_HMAC_SECRET_INVALID");
+  const key = await crypto.subtle.importKey(
+    "raw",
+    keyBytes,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const digest = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(`${eventId}.${timestamp}.${rawBody}`)
+  );
+  return `v1,${base64(digest)}`;
+}
+
+async function signHmac(rawBody, timestamp, secret) {
+  if (!secret) throw new Error("RUNTIME_HMAC_SECRET_INVALID");
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const digest = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(`${timestamp}.${rawBody}`)
+  );
+  return `sha256=${hex(digest)}`;
+}
+
 async function verifyStandardWebhook(request, rawBody, secret, toleranceSeconds = 300) {
   const eventId = request.headers.get("webhook-id") || "";
   const timestamp = request.headers.get("webhook-timestamp") || "";
@@ -138,26 +177,37 @@ async function verifyStandardWebhook(request, rawBody, secret, toleranceSeconds 
   });
 }
 
-async function submitMessage(request, env) {
+function runtimeBaseUrl(env) {
+  return String(env.CUSTOMER_AI_RUNTIME_URL || "").trim().replace(/\/+$/, "");
+}
+
+function runtimeHeaders(env, extra = {}) {
+  return {
+    authorization: `Bearer ${String(env.HF_TOKEN || "")}`,
+    ...extra
+  };
+}
+
+async function readPublicMessage(request, env) {
   if (!(await checkPublicRateLimit(request, env))) {
-    return json({ error: "rate_limited", retry_after_seconds: 60 }, 429, { "retry-after": "60" });
+    return { response: json({ error: "rate_limited", retry_after_seconds: 60 }, 429, { "retry-after": "60" }) };
   }
 
   const apiAuthorization = externalApiAuthorization(request, env);
   if (apiAuthorization.attempted && !apiAuthorization.authorized) {
-    return json({ error: "invalid_api_token" }, 401, { "www-authenticate": "Bearer" });
+    return { response: json({ error: "invalid_api_token" }, 401, { "www-authenticate": "Bearer" }) };
   }
 
   const remoteIp = request.headers.get("cf-connecting-ip") || "";
   if (!apiAuthorization.authorized && !(await verifyTurnstile(request, env, remoteIp))) {
-    return json({ error: "turnstile_failed" }, 403);
+    return { response: json({ error: "turnstile_failed" }, 403) };
   }
 
   const input = await bodyJson(request, Number(env.MAX_INPUT_BYTES || 32768));
   const message = String(input.message || "").trim();
-  if (!message) return json({ error: "message_required" }, 422);
+  if (!message) return { response: json({ error: "message_required" }, 422) };
   if (message.length > Number(env.MAX_MESSAGE_CHARS || 20000)) {
-    return json({ error: "message_too_large" }, 413);
+    return { response: json({ error: "message_too_large" }, 413) };
   }
 
   const source = apiAuthorization.authorized
@@ -166,7 +216,103 @@ async function submitMessage(request, env) {
   const sessionId = isId(input.session_id, "session") ? input.session_id : id("session");
   const messageId = isId(input.message_id, "message") ? input.message_id : id("message");
   const jobId = isId(input.job_id, "job") ? input.job_id : id("job");
-  const eventId = `event_${messageId}`;
+  return {
+    input,
+    message,
+    source,
+    sessionId,
+    messageId,
+    jobId,
+    apiAuthorization
+  };
+}
+
+async function submitSynchronousMessage(request, env) {
+  const parsed = await readPublicMessage(request, env);
+  if (parsed.response) return parsed.response;
+
+  const runtimeUrl = runtimeBaseUrl(env);
+  const runtimeSecret = String(env.CUSTOMER_AI_HMAC_SECRET || "");
+  const hfToken = String(env.HF_TOKEN || "");
+  if (!runtimeUrl || !runtimeSecret || !hfToken) {
+    return json({ error: "customer_ai_runtime_not_configured" }, 503);
+  }
+
+  const eventId = `event_${parsed.messageId}`;
+  const event = {
+    specversion: "1.0",
+    id: eventId,
+    source: "astera://cloudflare/customer-ai",
+    type: "customer.ai.message.requested",
+    subject: `job/${parsed.jobId}`,
+    time: new Date().toISOString(),
+    datacontenttype: "application/json",
+    data: {
+      job_id: parsed.jobId,
+      message: {
+        session_id: parsed.sessionId,
+        message_id: parsed.messageId,
+        message: parsed.message,
+        locale: String(parsed.input.locale || "ja-JP"),
+        source: parsed.source
+      }
+    }
+  };
+  const rawEvent = JSON.stringify(event);
+  const acceptTimestamp = String(Math.floor(Date.now() / 1000));
+  const acceptSignature = await signStandardWebhook(rawEvent, eventId, acceptTimestamp, runtimeSecret);
+  const acceptResponse = await fetch(`${runtimeUrl}/internal/customer-ai/accept`, {
+    method: "POST",
+    headers: runtimeHeaders(env, {
+      "content-type": "application/cloudevents+json",
+      "webhook-id": eventId,
+      "webhook-timestamp": acceptTimestamp,
+      "webhook-signature": acceptSignature
+    }),
+    body: rawEvent,
+    signal: AbortSignal.timeout(Number(env.RUNTIME_REQUEST_TIMEOUT_MS || 30000))
+  });
+  if (!acceptResponse.ok) {
+    return json({ error: "runtime_accept_failed" }, 502);
+  }
+
+  const processBody = "{}";
+  const processTimestamp = String(Math.floor(Date.now() / 1000));
+  const processSignature = await signHmac(processBody, processTimestamp, runtimeSecret);
+  const processResponse = await fetch(
+    `${runtimeUrl}/internal/customer-ai/jobs/${encodeURIComponent(parsed.jobId)}/process`,
+    {
+      method: "POST",
+      headers: runtimeHeaders(env, {
+        "content-type": "application/json",
+        "x-webhook-timestamp": processTimestamp,
+        "x-webhook-signature": processSignature
+      }),
+      body: processBody,
+      signal: AbortSignal.timeout(Number(env.RUNTIME_REQUEST_TIMEOUT_MS || 30000))
+    }
+  );
+  const result = await processResponse.json().catch(() => ({}));
+  if (!processResponse.ok) {
+    return json({ error: "runtime_process_failed" }, 502);
+  }
+
+  return json({
+    ok: true,
+    job_id: parsed.jobId,
+    session_id: parsed.sessionId,
+    message_id: parsed.messageId,
+    status: String(result.status || "completed"),
+    answer: String(result.answer || ""),
+    context_used: Boolean(result.context_used)
+  });
+}
+
+async function submitMessage(request, env) {
+  const parsed = await readPublicMessage(request, env);
+  if (parsed.response) return parsed.response;
+
+  const eventId = `event_${parsed.messageId}`;
   const destinationId = String(env.CUSTOMER_AI_RUNTIME_DESTINATION_ID || "");
   if (!env.WEBHOOK_INTERNAL_API_URL || !env.WEBHOOK_INTERNAL_API_TOKEN || !destinationId) {
     return json({ error: "customer_ai_edge_not_configured" }, 503);
@@ -183,15 +329,15 @@ async function submitMessage(request, env) {
       eventType: "customer.ai.message.requested",
       sourceId: "cloudflare-customer-ai-edge",
       destinationId,
-      subject: `job/${jobId}`,
+      subject: `job/${parsed.jobId}`,
       data: {
-        job_id: jobId,
+        job_id: parsed.jobId,
         message: {
-          session_id: sessionId,
-          message_id: messageId,
-          message,
-          locale: String(input.locale || "ja-JP"),
-          source
+          session_id: parsed.sessionId,
+          message_id: parsed.messageId,
+          message: parsed.message,
+          locale: String(parsed.input.locale || "ja-JP"),
+          source: parsed.source
         }
       }
     })
@@ -201,19 +347,19 @@ async function submitMessage(request, env) {
     return json({ error: "gateway_rejected", gateway: gatewayPayload }, 502);
   }
 
-  await env.CUSTOMER_AI_RESULTS.put(jobId, JSON.stringify({
-    job_id: jobId,
-    session_id: sessionId,
-    message_id: messageId,
+  await env.CUSTOMER_AI_RESULTS.put(parsed.jobId, JSON.stringify({
+    job_id: parsed.jobId,
+    session_id: parsed.sessionId,
+    message_id: parsed.messageId,
     status: "accepted",
     created_at: new Date().toISOString()
   }), { expirationTtl: Number(env.RESULT_TTL_SECONDS || 3600) });
 
   return json({
     ok: true,
-    job_id: jobId,
-    session_id: sessionId,
-    message_id: messageId,
+    job_id: parsed.jobId,
+    session_id: parsed.sessionId,
+    message_id: parsed.messageId,
     status: "accepted",
     gateway_event_id: gatewayPayload.eventId
   }, 202);
@@ -263,7 +409,11 @@ export default {
     }
     try {
       let response;
-      if (request.method === "POST" && url.pathname === "/v1/customer-ai/messages") {
+      if (request.method === "POST" && url.pathname === "/v1/customer-ai/respond") {
+        response = await submitSynchronousMessage(request, env);
+      } else if (request.method === "GET" && url.pathname === "/v1/customer-ai/config") {
+        response = json({ turnstile_site_key: String(env.TURNSTILE_SITE_KEY || "") });
+      } else if (request.method === "POST" && url.pathname === "/v1/customer-ai/messages") {
         response = await submitMessage(request, env);
       } else if (request.method === "POST" && url.pathname === "/v1/customer-ai/events") {
         response = await receiveEvent(request, env);
