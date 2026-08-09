@@ -55,6 +55,15 @@ const STOP_WORDS = new Set([
   "です", "ます", "したい", "できる", "できます", "どう", "どこ", "何", "なぜ", "場合", "もの", "こと",
 ]);
 
+const TASK_MODIFIER_PATTERNS = [
+  /^(?:同じ件(?:です)?|同じ話(?:です)?|先ほどの件(?:です)?)$/,
+  /^(?:条件を変え(?:ます)?|条件変更(?:です)?)$/,
+  /^(?:結論から|要点だけ|簡潔に|短く|詳しく|もう少し詳しく|わかりやすく)(?:教えて(?:ください)?)?$/,
+  /^(?:誤解しやすい点も含めて|注意点も含めて|例外も含めて)(?:教えて(?:ください)?)?$/,
+  /^(?:スマホ|モバイル|Android|iPhone|PC|デスクトップ|タブレット)(?:利用者)?(?:です)?$/i,
+  /^(?:初心者|一般利用者|登録利用者|開発者|法人)(?:向け)?(?:です)?$/,
+];
+
 function normalize(text) {
   return String(text || "")
     .normalize("NFKC")
@@ -80,6 +89,11 @@ function detectAudience(message, source) {
   return source === "astera-app" ? "registered_user" : "general_user";
 }
 
+function isTaskModifier(text) {
+  const value = normalize(text).replace(/[。?？!！\s]+$/g, "").trim();
+  return TASK_MODIFIER_PATTERNS.some((pattern) => pattern.test(value));
+}
+
 function extractDetails(message) {
   const details = {};
   const hour = message.match(/(?:午前|午後)?\s*(\d{1,2})\s*時/);
@@ -88,6 +102,11 @@ function extractDetails(message) {
   if (errorCode) details.error_code = errorCode[1];
   const timing = message.match(/今日|昨日|一昨日|今朝|昨夜|さっき|先ほど/);
   if (timing) details.relative_time = timing[0];
+  if (/スマホ|モバイル|android|iphone/i.test(message)) details.interface = "mobile";
+  else if (/pc|デスクトップ/i.test(message)) details.interface = "desktop";
+  else if (/タブレット/i.test(message)) details.interface = "tablet";
+  if (/結論から|要点だけ|簡潔に|短く/.test(message)) details.response_style = "conclusion_first";
+  if (/詳しく|詳細/.test(message)) details.detail_level = "detailed";
   return details;
 }
 
@@ -106,7 +125,7 @@ function splitDocument(message) {
         if (!raw) continue;
         const questionMark = /[?？]$/.test(raw);
         const cleaned = raw.replace(/[。?？\s]+$/g, "").trim();
-        if (!cleaned) continue;
+        if (!cleaned || isTaskModifier(cleaned)) continue;
         const actionable = questionMark || detectIntent(cleaned) !== "general" || /教えて|知りたい|確認したい/.test(cleaned);
         candidates.push({ text: cleaned, actionable });
       }
@@ -157,7 +176,7 @@ function analyzeTurn(payload) {
   const context = payload.context || {};
   const source = payload.source || "astera-hp";
   const explicitTopic = detectTopic(message);
-  const followUp = /^(それ|その|これ|では|じゃあ|あと|他|ちなみに|で、|なぜ|何で|どう|いつ|どこ|さっき|先ほど)/.test(message)
+  const followUp = /^(それ|その|これ|では|じゃあ|あと|他|ちなみに|で、|なぜ|何で|どう|いつ|どこ|さっき|先ほど|同じ件|同じ話|条件を変え)/.test(message)
     || (!explicitTopic && Boolean(context.active_topic || context.user_goal));
   const activeTopic = explicitTopic || context.active_topic || "general";
   const newTopic = Boolean(explicitTopic && context.active_topic && explicitTopic !== context.active_topic && !followUp);
