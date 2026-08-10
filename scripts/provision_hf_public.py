@@ -179,8 +179,6 @@ def main() -> None:
     if not TOKEN:
         raise SystemExit("HF_TOKEN_MISSING")
     notion_token = os.environ.get("NOTION_TOKEN", "").strip()
-    if not notion_token:
-        raise SystemExit("NOTION_TOKEN_MISSING")
 
     api = HfApi(token=TOKEN)
     volume = Volume(
@@ -210,11 +208,15 @@ def main() -> None:
         key="CUSTOMER_AI_BUNDLE_KEY",
         value=bundle_key,
     )
-    api.add_space_secret(
-        SPACE_ID,
-        key="NOTION_TOKEN",
-        value=notion_token,
-    )
+    if notion_token:
+        api.add_space_secret(
+            SPACE_ID,
+            key="NOTION_TOKEN",
+            value=notion_token,
+        )
+        print("HF_PUBLIC_NOTION_SECRET_UPDATED=true")
+    else:
+        print("HF_PUBLIC_NOTION_SECRET_UPDATED=false")
     api.add_space_secret(
         SPACE_ID,
         key="CUSTOMER_AI_HMAC_SECRET",
