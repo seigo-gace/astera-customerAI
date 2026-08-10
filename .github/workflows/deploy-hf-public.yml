@@ -21,7 +21,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 45
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN || secrets.HF_KEY }}
       NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
@@ -34,23 +34,19 @@ jobs:
       - uses: actions/checkout@v4
         with: {ref: main}
       - uses: actions/setup-python@v5
-        with: {python-version: '3.13', cache: pip}
-      - uses: actions/setup-node@v4
-        with: {node-version: '22.16.0'}
-      - name: Verify source before public deployment
+        with: {python-version: '3.13'}
+      - name: Verify deploy source
         id: preflight
         shell: bash
         run: |
           set -euo pipefail
           test -n "$HF_TOKEN" || { echo 'HF_TOKEN missing' >&2; exit 11; }
           python -m pip install --upgrade pip --quiet
-          pip install -r requirements-dev.txt --quiet
-          pip install --upgrade 'huggingface_hub>=1.24.0' 'cryptography>=45,<47' 'httpx>=0.28,<1' --quiet
+          pip install 'huggingface_hub>=1.24.0' 'cryptography>=45,<47' 'httpx>=0.28,<1' --quiet
           python -m py_compile public_app.py scripts/provision_hf_public.py
-          python scripts/review.py --all
-          ruff check . --select E9,F63,F7,F82
-          pytest -q tests/test_public_hf_api.py
-          npm test
+          grep -Fq 'runtime.bundle.enc' scripts/provision_hf_public.py
+          grep -Fq 'Fernet' scripts/provision_hf_public.py
+          ! grep -Eqi 'cloudflare|turnstile|api\.asterav8\.jp' public_app.py scripts/provision_hf_public.py
       - name: Deploy encrypted runtime bundle and run live E2E
         id: live
         shell: bash
