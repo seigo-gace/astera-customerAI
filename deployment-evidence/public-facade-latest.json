@@ -1,11 +1,11 @@
 {
-  "status": "failure",
-  "preflight": "success",
-  "live_e2e": "failure",
+  "status": "cancelled",
+  "preflight": "skipped",
+  "live_e2e": "skipped",
   "architecture": "public-hp -> GitHub-private managed facade -> private HF runtime",
   "cloudflare_customer_ai": false,
   "public_facade": "G-ACE/astera-customerAI-public",
   "private_runtime": "G-ACE/astera-customerAI",
-  "source_sha": "5136673b1c5465979359a72f1932402d180d9662",
-  "run_id": "31406387916"
+  "source_sha": "ddf0851521da4512844d4b0adc4e7ceee4584207",
+  "run_id": "31406880047"
 }
