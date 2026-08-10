@@ -43,7 +43,6 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$HF_TOKEN" || { echo 'HF_TOKEN missing' >&2; exit 11; }
-          test -n "$NOTION_TOKEN" || { echo 'NOTION_TOKEN missing' >&2; exit 12; }
           python -m pip install --upgrade pip --quiet
           pip install -r requirements-dev.txt --quiet
           pip install --upgrade 'huggingface_hub>=1.24.0' 'cryptography>=45,<47' 'httpx>=0.28,<1' --quiet
