@@ -5,6 +5,8 @@
   "type": "module",
   "engines": {"node": ">=22.0.0"},
   "scripts": {
-    "test": "node --test v8/test/*.test.mjs"
+    "test": "node --test v8/test/*.test.mjs",
+    "check:edge": "node --check edge/src/worker.js",
+    "test:edge": "node --test edge/test/*.test.mjs"
   }
 }
