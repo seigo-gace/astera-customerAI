@@ -1,11 +1,11 @@
 {
   "status": "failure",
-  "preflight": "success",
-  "live_e2e": "failure",
+  "preflight": "failure",
+  "live_e2e": "skipped",
   "architecture": "public-hp -> GitHub-private managed facade -> private HF runtime",
   "cloudflare_customer_ai": false,
   "public_facade": "G-ACE/astera-customerAI-public",
   "private_runtime": "G-ACE/astera-customerAI",
-  "source_sha": "ce53549b4331b88216ebdcb3bf862b125100a1fb",
-  "run_id": "31407173182"
+  "source_sha": "804daa8fa2b91973a51f477ef96758dfa29d807a",
+  "run_id": "31408213092"
 }
