@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import shutil
 import time
 from collections import OrderedDict
 from datetime import UTC, datetime
@@ -55,6 +56,13 @@ class ConversationCache:
         )
         self.store.put_json(self._path(trimmed.session_id), trimmed.model_dump(mode="json"))
         self._remember(trimmed)
+
+    def delete(self, session_id: str) -> bool:
+        """Delete one bounded session from memory and persistent runtime state."""
+        existed = session_id in self._memory or (self.root / session_id).exists()
+        self._memory.pop(session_id, None)
+        shutil.rmtree(self.root / session_id, ignore_errors=True)
+        return existed
 
     def append_turns(
         self,
