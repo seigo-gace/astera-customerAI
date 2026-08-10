@@ -1,0 +1,20 @@
+{
+  "schema_version": "customerai_master_v2_hp_public_bundle_v2",
+  "effective_date": "2026-08-09",
+  "source_sha256": "2c85ff01e3c2654789bb57a630eefeed7e26abf2f817de7d949c7855d806822b",
+  "source": "Astera公式HP｜11｜料金プラン・クレジット｜/pricing/",
+  "source_page_id": "3b5cdcf128e48143b0afe6c0def02a0c",
+  "scope": "current_hp_public_pricing",
+  "pages": [
+    {
+      "id": "3b5cdcf128e48143b0afe6c0def02a0c-pricing-current",
+      "url": "https://app.notion.com/p/3b5cdcf128e48143b0afe6c0def02a0c",
+      "Title": "料金プランを教えてください",
+      "Category": "料金・プラン",
+      "Target_Intents": "料金 料金を教えて 料金プラン 月額 価格 いくら 費用 Free Basic Pro Business Enterprise 0円 980円 2,980円 9,980円 29,800円 Credit クレジット",
+      "Definitive_Answer": "公開予定の月額Planはすべて税込で、Free 0円（初回20,000 Credit／以後毎月10,000 Credit）、Basic 980円（毎月180,000 Credit）、Pro 2,980円（毎月640,000 Credit）、Business 9,980円（毎月2,200,000 Credit）、Enterprise 29,800円（毎月6,600,000 Credit）です。Astera Appはクラウドファンディング終了まで一般公開せず、現時点では契約・登録・Checkoutは行いません。",
+      "Exceptions_and_Limits": "これはAstera公式HP正本の2026-08-09時点の公開予定価格です。App公開後もHP料金ページから直接契約させず、Astera App側へ案内します。料金・Credit条件を変更する場合は最新の共通Commercial CatalogとHP料金正本を優先します。",
+      "Status": "公開"
+    }
+  ]
+}
