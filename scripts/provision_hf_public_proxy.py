@@ -70,8 +70,10 @@ def main() -> None:
     private_url = f"https://{private.subdomain}.hf.space"
 
     # Keep both server-side components on one secret without exposing it to the browser.
+    # Secret/variable updates and source uploads are the only deploy mutations here.
+    # Explicit Space restart is intentionally avoided so this flow does not consume
+    # an additional restart allocation or disturb unrelated Spaces.
     api.add_space_secret(PRIVATE_SPACE_ID, key="CUSTOMER_AI_HMAC_SECRET", value=hmac_secret)
-    api.restart_space(PRIVATE_SPACE_ID)
     wait_json(
         private_url + "/healthz",
         lambda body: body.get("status") == "ok",
@@ -98,7 +100,6 @@ def main() -> None:
         target.joinpath("README.md").write_text(readme, encoding="utf-8")
         api.upload_folder(repo_id=PUBLIC_SPACE_ID, repo_type="space", folder_path=str(target), commit_message=f"Deploy Customer AI facade {os.environ.get('GITHUB_SHA', 'manual')}")
 
-    api.restart_space(PUBLIC_SPACE_ID)
     info = api.space_info(PUBLIC_SPACE_ID, expand=["subdomain", "private", "runtime", "sha"])
     if info.private:
         raise RuntimeError("PUBLIC_FACADE_IS_PRIVATE")
