@@ -1,4 +1,0 @@
-deploy=github-private-facade
-architecture=hp-to-private-github-facade-to-private-hf
-cloudflare_customer_ai=false
-trigger=2026-08-11T00:35:00+09:00
