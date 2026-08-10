@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
 import tempfile
 import time
@@ -10,16 +12,26 @@ from huggingface_hub import HfApi
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN = os.environ.get("HF_TOKEN", "").strip()
-HMAC_SECRET = os.environ.get("CUSTOMER_AI_HMAC_SECRET", "").strip()
+EXPLICIT_HMAC_SECRET = os.environ.get("CUSTOMER_AI_HMAC_SECRET", "").strip()
 PRIVATE_SPACE_ID = os.environ.get("HF_PRIVATE_SPACE_ID", "G-ACE/astera-customerAI").strip()
 PUBLIC_SPACE_ID = os.environ.get("HF_PUBLIC_SPACE_ID", "G-ACE/astera-customerAI-public").strip()
+
+
+def shared_hmac_secret() -> str:
+    if EXPLICIT_HMAC_SECRET:
+        return EXPLICIT_HMAC_SECRET
+    if not TOKEN:
+        return ""
+    digest = hashlib.sha256(("astera-customer-ai-hmac-v1:" + TOKEN).encode("utf-8")).digest()
+    return "base64:" + base64.b64encode(digest).decode("ascii")
 
 
 def main() -> None:
     if not TOKEN:
         raise SystemExit("HF_TOKEN_MISSING")
-    if not HMAC_SECRET:
-        raise SystemExit("CUSTOMER_AI_HMAC_SECRET_MISSING")
+    hmac_secret = shared_hmac_secret()
+    if not hmac_secret:
+        raise SystemExit("CUSTOMER_AI_HMAC_SECRET_UNAVAILABLE")
 
     api = HfApi(token=TOKEN)
     private = api.space_info(PRIVATE_SPACE_ID, expand=["subdomain", "private", "runtime", "sha"])
@@ -29,10 +41,14 @@ def main() -> None:
         raise RuntimeError("PRIVATE_RUNTIME_SUBDOMAIN_MISSING")
     private_url = f"https://{private.subdomain}.hf.space"
 
+    # Keep both server-side components on one secret without exposing it to the browser.
+    api.add_space_secret(PRIVATE_SPACE_ID, key="CUSTOMER_AI_HMAC_SECRET", value=hmac_secret)
+    api.restart_space(PRIVATE_SPACE_ID)
+
     api.create_repo(repo_id=PUBLIC_SPACE_ID, repo_type="space", private=False, exist_ok=True, space_sdk="gradio")
     api.update_repo_settings(repo_id=PUBLIC_SPACE_ID, repo_type="space", private=False)
     api.add_space_secret(PUBLIC_SPACE_ID, key="HF_TOKEN", value=TOKEN)
-    api.add_space_secret(PUBLIC_SPACE_ID, key="CUSTOMER_AI_HMAC_SECRET", value=HMAC_SECRET)
+    api.add_space_secret(PUBLIC_SPACE_ID, key="CUSTOMER_AI_HMAC_SECRET", value=hmac_secret)
     api.add_space_secret(PUBLIC_SPACE_ID, key="PRIVATE_HF_RUNTIME_URL", value=private_url)
     api.add_space_variable(PUBLIC_SPACE_ID, key="CUSTOMER_AI_PUBLIC_ORIGINS", value="https://asterav8.jp,https://www.asterav8.jp")
     api.add_space_variable(PUBLIC_SPACE_ID, key="CUSTOMER_AI_PUBLIC_SESSION_REQUESTS_PER_MINUTE", value="30")
