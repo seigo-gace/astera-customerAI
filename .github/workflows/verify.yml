@@ -37,14 +37,20 @@ jobs:
       - name: HF API client static boundary
         if: always()
         run: |
-          python -m py_compile runtime/model.py
+          python -m py_compile runtime/model.py hp_runtime.py
           grep -Fq 'https://router.huggingface.co/v1/chat/completions' runtime/model.py
           grep -Fq 'HF_TOKEN' runtime/model.py
+          grep -Fq '@app.post("/respond")' hp_runtime.py
+          grep -Fq '@app.delete("/sessions/{session_id}")' hp_runtime.py
+          grep -Fq 'MAX_PUBLIC_MESSAGE_CHARS = 12_000' hp_runtime.py
           ! grep -Eq 'AutoModelForCausalLM|AutoTokenizer|import torch|from transformers' runtime/model.py
-          ! grep -Eqi 'cloudflare|turnstile|api\.asterav8\.jp' runtime/model.py
+          ! grep -Eqi 'cloudflare|turnstile|api\.asterav8\.jp|hf\.space' runtime/model.py hp_runtime.py
       - name: HF API client unit tests
         if: always()
         run: pytest -q tests/test_model_api.py --junitxml=test-results/model-api.xml
+      - name: HP runtime contract tests
+        if: always()
+        run: pytest -q tests/test_hp_runtime.py --junitxml=test-results/hp-runtime.xml
       - name: Live HF API smoke from private GitHub workflow
         id: hf_smoke
         if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -85,6 +91,7 @@ jobs:
               'token_exposed': False,
               'cloudflare_customer_ai': False,
               'public_hf_space': False,
+              'hp_runtime_source': 'hp_runtime.py',
           }
           Path('deployment-evidence/hf-api-smoke.json').write_text(
               json.dumps(payload, ensure_ascii=False, indent=2) + '\n',
