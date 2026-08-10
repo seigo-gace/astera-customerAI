@@ -14,6 +14,7 @@ from .config import Settings
 MISSING_KB_ANSWER = "現在、該当する正確な案内情報が登録されていません"
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _DEFAULT_HF_API_URL = "https://router.huggingface.co/v1/chat/completions"
+_DEFAULT_HF_PROVIDER = "featherless-ai"
 
 
 def _hf_token() -> str:
@@ -22,6 +23,19 @@ def _hf_token() -> str:
 
 def _hf_api_url() -> str:
     return os.getenv("CUSTOMER_AI_HF_API_URL", _DEFAULT_HF_API_URL).strip() or _DEFAULT_HF_API_URL
+
+
+def _hf_provider() -> str:
+    return os.getenv("CUSTOMER_AI_HF_PROVIDER", _DEFAULT_HF_PROVIDER).strip() or _DEFAULT_HF_PROVIDER
+
+
+def _routed_model(model_id: str) -> str:
+    model = model_id.strip()
+    if not model:
+        raise ValueError("model_id_required")
+    if ":" in model.rsplit("/", 1)[-1]:
+        return model
+    return f"{model}:{_hf_provider()}"
 
 
 def _hf_timeout_seconds() -> float:
@@ -33,6 +47,21 @@ def _hf_timeout_seconds() -> float:
     if value <= 0 or value > 120:
         raise ValueError("CUSTOMER_AI_HF_TIMEOUT_SECONDS must be > 0 and <= 120")
     return value
+
+
+def _error_detail(response: Any) -> str:
+    try:
+        payload = response.json()
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    value = payload.get("error") or payload.get("message") or payload.get("detail")
+    if isinstance(value, dict):
+        value = value.get("message") or value.get("detail") or value.get("error")
+    if not isinstance(value, str):
+        return ""
+    return re.sub(r"hf_[A-Za-z0-9_-]+", "[REDACTED]", value)[:240]
 
 
 def _generate_remote(
@@ -61,25 +90,29 @@ def _generate_remote(
             "accept": "application/json",
         },
         json={
-            "model": model_id,
+            "model": _routed_model(model_id),
             "messages": [{"role": "user", "content": instruction + packet}],
             "max_tokens": max_new_tokens,
-            "temperature": 0,
             "stream": False,
         },
         timeout=httpx.Timeout(_hf_timeout_seconds()),
         follow_redirects=True,
     )
+    detail = _error_detail(response)
     if response.status_code == 401:
-        raise RuntimeError("hf_api_unauthorized")
+        raise RuntimeError("hf_api_unauthorized" + (f":{detail}" if detail else ""))
     if response.status_code == 402:
-        raise RuntimeError("hf_api_payment_required")
+        raise RuntimeError("hf_api_payment_required" + (f":{detail}" if detail else ""))
     if response.status_code == 429:
-        raise RuntimeError("hf_api_rate_limited")
+        raise RuntimeError("hf_api_rate_limited" + (f":{detail}" if detail else ""))
     if response.status_code >= 500:
-        raise RuntimeError(f"hf_api_unavailable:{response.status_code}")
+        raise RuntimeError(
+            f"hf_api_unavailable:{response.status_code}" + (f":{detail}" if detail else "")
+        )
     if response.status_code >= 400:
-        raise RuntimeError(f"hf_api_failed:{response.status_code}")
+        raise RuntimeError(
+            f"hf_api_failed:{response.status_code}" + (f":{detail}" if detail else "")
+        )
 
     try:
         payload = response.json()
