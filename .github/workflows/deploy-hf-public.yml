@@ -1,0 +1,94 @@
+name: deploy-public-hf-customer-ai
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.deploy/customer-ai-public'
+      - 'public_app.py'
+      - 'scripts/provision_hf_public.py'
+      - 'tests/test_public_hf_api.py'
+      - '.github/workflows/deploy-hf-public.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deploy-public-hf-customer-ai
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN || secrets.HF_KEY }}
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      HF_PUBLIC_SPACE_ID: G-ACE/astera-customerAI-public
+      HF_BUCKET_ID: G-ACE/astera-customerai-data
+      CUSTOMER_AI_MODEL_ID: Qwen/Qwen3-0.6B
+      CUSTOMER_AI_MODEL_REVISION: c1899de289a04d12100db370d81485cdf75e47ca
+      CUSTOMER_AI_ENABLE_MODEL: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: main}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13', cache: pip}
+      - uses: actions/setup-node@v4
+        with: {node-version: '22.16.0'}
+      - name: Verify source before public deployment
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo 'HF_TOKEN missing' >&2; exit 11; }
+          test -n "$NOTION_TOKEN" || { echo 'NOTION_TOKEN missing' >&2; exit 12; }
+          python -m pip install --upgrade pip --quiet
+          pip install -r requirements-dev.txt --quiet
+          pip install --upgrade 'huggingface_hub>=1.24.0' 'cryptography>=45,<47' 'httpx>=0.28,<1' --quiet
+          python -m py_compile public_app.py scripts/provision_hf_public.py
+          python scripts/review.py --all
+          ruff check . --select E9,F63,F7,F82
+          pytest -q tests/test_public_hf_api.py
+          npm test
+      - name: Deploy encrypted runtime bundle and run live E2E
+        id: live
+        shell: bash
+        run: |
+          set -o pipefail
+          python scripts/provision_hf_public.py 2>&1 | tee /tmp/customer-ai-public-deploy.log
+      - name: Persist deployment evidence
+        if: always()
+        shell: bash
+        env:
+          JOB_STATUS: ${{ job.status }}
+          PREFLIGHT_OUTCOME: ${{ steps.preflight.outcome }}
+          LIVE_OUTCOME: ${{ steps.live.outcome }}
+        run: |
+          set -euo pipefail
+          mkdir -p deployment-evidence
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          payload = {
+              'status': os.environ.get('JOB_STATUS', 'unknown'),
+              'preflight': os.environ.get('PREFLIGHT_OUTCOME', 'unknown'),
+              'live_e2e': os.environ.get('LIVE_OUTCOME', 'unknown'),
+              'architecture': 'public HP -> HF public API boundary; encrypted runtime bundle deployed from private GitHub source',
+              'cloudflare_customer_ai': False,
+              'public_space': 'G-ACE/astera-customerAI-public',
+              'private_source_repo': 'seigo-gace/astera-customerAI',
+              'source_sha': os.environ['GITHUB_SHA'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+          }
+          Path('deployment-evidence/public-hf-latest.json').write_text(
+              json.dumps(payload, ensure_ascii=False, indent=2) + '\n', encoding='utf-8'
+          )
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add deployment-evidence/public-hf-latest.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "chore: record public Customer AI live evidence"
+          git push origin HEAD:main
