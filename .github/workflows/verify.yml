@@ -19,19 +19,23 @@ jobs:
           node-version: '22.16.0'
       - run: python -m pip install --upgrade pip --quiet
       - run: pip install -r requirements-dev.txt --quiet
-      - run: pip install 'cryptography>=45,<47' 'huggingface_hub>=1.24.0' --quiet
       - run: mkdir -p test-results
       - name: Review architecture and syntax
         run: python scripts/review.py --all
       - name: Ruff fatal checks
         if: always()
         run: ruff check . --select E9,F63,F7,F82
-      - name: Public HF boundary syntax
+      - name: HF API client static boundary
         if: always()
-        run: python -m py_compile public_app.py scripts/provision_hf_public.py
-      - name: Public HF boundary contract tests
+        run: |
+          python -m py_compile runtime/model.py
+          grep -Fq 'https://router.huggingface.co/v1/chat/completions' runtime/model.py
+          grep -Fq 'HF_TOKEN' runtime/model.py
+          ! grep -Eq 'AutoModelForCausalLM|AutoTokenizer|import torch|from transformers' runtime/model.py
+          ! grep -Eqi 'cloudflare|turnstile|api\.asterav8\.jp' runtime/model.py
+      - name: HF API client unit tests
         if: always()
-        run: pytest -q tests/test_public_hf_api.py --junitxml=test-results/public-hf.xml
+        run: pytest -q tests/test_model_api.py --junitxml=test-results/model-api.xml
       - name: Conversation and control runtime tests
         if: always()
         run: pytest -q tests/test_control_core.py --junitxml=test-results/control.xml
@@ -63,6 +67,25 @@ jobs:
       - name: Full Python regression suite
         if: always()
         run: pytest -q --junitxml=test-results/full-regression.xml
+      - name: Live HF API smoke from private GitHub workflow
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN || secrets.HF_KEY }}
+          CUSTOMER_AI_HF_TIMEOUT_SECONDS: '30'
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo 'HF_TOKEN missing'; exit 11; }
+          python - <<'PY'
+          from runtime.model import _generate_remote
+          answer = _generate_remote(
+              'Qwen/Qwen3-0.6B',
+              '{"deterministic_answer":"OK とだけ返してください。"}',
+              8,
+          ).strip()
+          if not answer:
+              raise SystemExit('HF_API_SMOKE_EMPTY')
+          print('HF_API_SMOKE_OK')
+          PY
       - name: Upload verification results
         if: always()
         continue-on-error: true
