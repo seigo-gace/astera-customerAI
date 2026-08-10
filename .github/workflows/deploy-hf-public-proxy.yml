@@ -37,7 +37,6 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$HF_TOKEN" || { echo 'HF_TOKEN missing' >&2; exit 11; }
-          test -n "$CUSTOMER_AI_HMAC_SECRET" || { echo 'CUSTOMER_AI_HMAC_SECRET missing' >&2; exit 12; }
           python -m pip install --upgrade pip --quiet
           pip install 'fastapi==0.128.2' 'uvicorn==0.48.0' 'httpx>=0.28,<1' 'huggingface_hub>=1.24.0' --quiet
           python -m py_compile public_proxy.py scripts/provision_hf_public_proxy.py
