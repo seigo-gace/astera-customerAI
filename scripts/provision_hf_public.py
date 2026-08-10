@@ -11,39 +11,34 @@ from pathlib import Path
 
 import httpx
 from cryptography.fernet import Fernet
-from huggingface_hub import HfApi, Volume
+from huggingface_hub import HfApi
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN = os.environ.get("HF_TOKEN", "").strip()
 SPACE_ID = os.environ.get(
-    "HF_PUBLIC_SPACE_ID", "G-ACE/astera-customerAI-public"
-).strip()
-BUCKET_ID = os.environ.get(
-    "HF_BUCKET_ID", "G-ACE/astera-customerai-data"
+    "HF_PUBLIC_SPACE_ID", "G-ACE/astera-customerAI"
 ).strip()
 V3_DATA_SOURCE_ID = "e8f1bcaa-8e1f-482f-97db-f90542699e4a"
+ALLOWED_PUBLIC_FILES = {
+    ".gitattributes",
+    "README.md",
+    "bootstrap.py",
+    "requirements.txt",
+    "runtime.bundle.enc",
+}
 
 
 def runtime_bundle() -> bytes:
     stream = io.BytesIO()
     with tarfile.open(fileobj=stream, mode="w:gz") as archive:
-        for path in [
-            ROOT / "public_app.py",
-            ROOT / "runtime",
-            ROOT / "v8",
-            ROOT / "kb",
-        ]:
+        for path in [ROOT / "public_app.py", ROOT / "runtime", ROOT / "v8", ROOT / "kb"]:
             if not path.exists():
                 continue
             if path.is_file():
                 archive.add(path, arcname=path.name)
                 continue
             for child in path.rglob("*"):
-                if (
-                    not child.is_file()
-                    or "__pycache__" in child.parts
-                    or child.suffix == ".pyc"
-                ):
+                if not child.is_file() or "__pycache__" in child.parts or child.suffix == ".pyc":
                     continue
                 archive.add(child, arcname=str(child.relative_to(ROOT)))
     return stream.getvalue()
@@ -80,63 +75,36 @@ def read_requirements() -> str:
     return base + "\ncryptography>=45,<47\n"
 
 
-def public_url(api: HfApi) -> str:
-    info = api.space_info(
+def space_info(api: HfApi):
+    return api.space_info(
         SPACE_ID,
         expand=["subdomain", "sha", "private", "runtime"],
     )
-    if info.private:
-        raise RuntimeError("PUBLIC_SPACE_IS_PRIVATE")
+
+
+def space_url(api: HfApi) -> str:
+    info = space_info(api)
     subdomain = str(info.subdomain or "").strip()
     if not subdomain:
-        raise RuntimeError("PUBLIC_SPACE_SUBDOMAIN_MISSING")
+        raise RuntimeError("CUSTOMER_AI_SPACE_SUBDOMAIN_MISSING")
     return f"https://{subdomain}.hf.space"
 
 
-def ensure_public_space(api: HfApi, volume: Volume) -> None:
-    try:
-        info = api.space_info(
-            SPACE_ID,
-            expand=["subdomain", "sha", "private", "runtime"],
-        )
-    except Exception as error:
-        response = getattr(error, "response", None)
-        if response is None or getattr(response, "status_code", None) != 404:
-            raise
-        api.create_repo(
-            repo_id=SPACE_ID,
-            repo_type="space",
-            private=False,
-            exist_ok=False,
-            space_sdk="gradio",
-            space_volumes=[volume],
-        )
-        print("HF_PUBLIC_SPACE_REUSED=false")
-        return
-
-    if info.private:
-        api.update_repo_settings(
-            repo_id=SPACE_ID,
-            repo_type="space",
-            private=False,
-        )
-    print("HF_PUBLIC_SPACE_REUSED=true")
-
-
-def wait_health(url: str) -> None:
+def wait_health(url: str, *, private: bool) -> None:
+    headers = {"authorization": f"Bearer {TOKEN}"} if private else None
     last = ""
-    for attempt in range(45):
+    for attempt in range(30):
         try:
-            response = httpx.get(url + "/healthz", timeout=20, follow_redirects=True)
+            response = httpx.get(url + "/healthz", headers=headers, timeout=20, follow_redirects=True)
             last = f"{response.status_code}:{response.text[:200]}"
             if response.status_code == 200 and response.json().get("status") == "ok":
-                print("HF_PUBLIC_CUSTOMER_AI_HEALTH_OK")
+                print("HF_CUSTOMER_AI_PRIVATE_HEALTH_OK" if private else "HF_PUBLIC_CUSTOMER_AI_HEALTH_OK")
                 return
         except Exception as error:
             last = repr(error)
-        if attempt < 44:
+        if attempt < 29:
             time.sleep(10)
-    raise RuntimeError(f"HF_PUBLIC_CUSTOMER_AI_HEALTH_TIMEOUT:{last}")
+    raise RuntimeError(f"HF_CUSTOMER_AI_HEALTH_TIMEOUT:{last}")
 
 
 def live_e2e(url: str) -> None:
@@ -185,19 +153,27 @@ def live_e2e(url: str) -> None:
     raise RuntimeError(f"HF_PUBLIC_CUSTOMER_AI_E2E_FAILED:{last}")
 
 
+def assert_public_repo_sanitized(api: HfApi) -> None:
+    files = set(api.list_repo_files(repo_id=SPACE_ID, repo_type="space"))
+    unexpected = sorted(files - ALLOWED_PUBLIC_FILES)
+    missing = sorted({"README.md", "bootstrap.py", "requirements.txt", "runtime.bundle.enc"} - files)
+    if unexpected:
+        raise RuntimeError("PUBLIC_SPACE_PLAINTEXT_RESIDUAL:" + ",".join(unexpected[:30]))
+    if missing:
+        raise RuntimeError("PUBLIC_SPACE_BUNDLE_FILES_MISSING:" + ",".join(missing))
+    print("HF_PUBLIC_SPACE_SOURCE_SANITIZED=true")
+
+
 def main() -> None:
     if not TOKEN:
         raise SystemExit("HF_TOKEN_MISSING")
     notion_token = os.environ.get("NOTION_TOKEN", "").strip()
-
     api = HfApi(token=TOKEN)
-    volume = Volume(
-        type="bucket",
-        source=BUCKET_ID,
-        mount_path="/data/customer-ai",
-        read_only=False,
-    )
-    ensure_public_space(api, volume)
+
+    info = space_info(api)
+    if not info.private:
+        raise RuntimeError("EXISTING_CUSTOMER_AI_SPACE_MUST_START_PRIVATE")
+    print("HF_EXISTING_CUSTOMER_AI_SPACE_REUSED=true")
 
     bundle_key = Fernet.generate_key().decode()
     api.add_space_secret(SPACE_ID, key="CUSTOMER_AI_BUNDLE_KEY", value=bundle_key)
@@ -254,20 +230,27 @@ def main() -> None:
             "---\n\n"
             "# Astera Customer AI Public API\n\n"
             "Public synchronous API surface for the Astera official website. "
-            "Runtime source is deployed as an encrypted bundle from the "
-            "private GitHub repository.\n",
+            "Runtime source is deployed as an encrypted bundle from the private GitHub repository.\n",
             encoding="utf-8",
         )
         api.upload_folder(
             repo_id=SPACE_ID,
             repo_type="space",
             folder_path=str(target),
-            commit_message=f"Deploy public Customer AI {os.environ.get('GITHUB_SHA', 'manual')}",
+            delete_patterns=["*", "**/*"],
+            commit_message=f"Deploy encrypted public Customer AI {os.environ.get('GITHUB_SHA', 'manual')}",
         )
 
-    url = public_url(api)
-    print(f"HF_PUBLIC_CUSTOMER_AI_URL={url}")
-    wait_health(url)
+    assert_public_repo_sanitized(api)
+    url = space_url(api)
+    wait_health(url, private=True)
+
+    # Publish only after source sanitization and private-runtime health both pass.
+    api.update_repo_settings(repo_id=SPACE_ID, repo_type="space", private=False)
+    if space_info(api).private:
+        raise RuntimeError("CUSTOMER_AI_SPACE_PUBLICATION_FAILED")
+    print("HF_CUSTOMER_AI_SPACE_PUBLIC=true")
+    wait_health(url, private=False)
     live_e2e(url)
 
 
