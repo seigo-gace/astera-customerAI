@@ -1,0 +1,13 @@
+{
+  "hp": "https://asterav8.jp",
+  "endpoint": "https://g-ace-astera-customerai.hf.space",
+  "page_status": 200,
+  "script_status": 200,
+  "client_status": 200,
+  "live_asset_has_endpoint": true,
+  "respond_status": 200,
+  "respond_has_answer": true,
+  "answer_preview": "現在、該当する正確な案内情報が登録されていません",
+  "run_id": "31432186256",
+  "source_sha": "860da05fdacdedb39c852c79a63da7ac4d99ec5c"
+}
