@@ -1,0 +1,16 @@
+{
+  "target_space": "G-ACE/astera-customerAI",
+  "runtime_stage": "RUNNING",
+  "runtime_error": "",
+  "space_private": true,
+  "space_sha": "9cb3a74ff68c0a9605b2b8cf1a82a7f748a35efd",
+  "space_url": "https://g-ace-astera-customerai.hf.space",
+  "config_collisions": [],
+  "public_healthz_status": 404,
+  "authenticated_readyz_status": 503,
+  "public_respond_status": 0,
+  "respond_has_answer": false,
+  "detail": "{\"detail\":{\"ready\":false,\"checks\":{\"data_root\":true,\"v8\":true,\"v8_startup_error\":\"\",\"kb\":false,\"model_enabled\":true,\"model_revision_pinned\":true,\"conversation_cache\":{\"memory_sessions\":0,\"max_sessions\":256,\"max_turns\":12},\"kb_cache\":{\"entries\":0,\"max_entries\":512},\"feedback_store\":true,\"internal_event_api\":{\"configured\":false,\"source_id\":\"hf-private-runtime\",\"result_destination_id\":\"app-receiver\"},\"support_pipeline\":\"astera-customerai-master-v2-kb-only\"},\"hf_api_available\":true}}",
+  "run_id": "31431642305",
+  "source_sha": "0bfe1d3a1dea460fa6718550b277c4168ba591ca"
+}
