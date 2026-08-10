@@ -7,7 +7,7 @@
   "free_model_invoked": false,
   "failure_stage": "before_hp_public_live_story_report",
   "workflow_status": "failure",
-  "workflow_run_id": "31356552188",
-  "workflow_sha": "cc65f516c16c41a528eec2ab762e0118fa11605c",
-  "evidence_persisted_at": "2026-08-10T04:49:01.037057+00:00"
+  "workflow_run_id": "31356675271",
+  "workflow_sha": "97197f8908847ce5ce56c8105e89b0f124c409aa",
+  "evidence_persisted_at": "2026-08-10T04:51:42.181862+00:00"
 }
