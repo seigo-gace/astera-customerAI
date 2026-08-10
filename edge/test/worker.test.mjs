@@ -284,3 +284,89 @@ test('invalid result signature is rejected without writing state', async () => {
   assert.equal(response.status, 401);
   assert.equal(await env.CUSTOMER_AI_RESULTS.get(jobId, 'json'), null);
 });
+
+test('public routing fields are normalized and forwarded to the private runtime event', async (t) => {
+  const env = baseEnv();
+  let captured;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    captured = { url: String(url), options };
+    return new Response(JSON.stringify({ ok: true, eventId: 'routing-event-id' }), {
+      status: 202,
+      headers: { 'content-type': 'application/json' }
+    });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const response = await worker.fetch(messageRequest({
+    session_id: 'session_1234567890',
+    response_mode: 'technical',
+    mode_source: 'selected',
+    current_path: '/developer/architecture/?from=hp#routing'
+  }), env);
+  assert.equal(response.status, 202);
+  const accepted = await response.json();
+  const event = JSON.parse(captured.options.body);
+  assert.equal(event.data.message.response_mode, 'technical');
+  assert.equal(event.data.message.mode_source, 'selected');
+  assert.equal(event.data.message.current_path, '/developer/architecture/');
+  assert.equal(accepted.response_mode, 'technical');
+  assert.equal(accepted.mode_source, 'selected');
+  assert.equal(accepted.current_path, '/developer/architecture/');
+
+  const stored = await env.CUSTOMER_AI_RESULTS.get(accepted.job_id, 'json');
+  assert.equal(stored.response_mode, 'technical');
+  assert.equal(stored.current_path, '/developer/architecture/');
+});
+
+test('invalid response mode is rejected before gateway delivery', async (t) => {
+  const env = baseEnv();
+  const originalFetch = globalThis.fetch;
+  let called = false;
+  globalThis.fetch = async () => {
+    called = true;
+    throw new Error('gateway must not be called');
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const response = await worker.fetch(messageRequest({ response_mode: 'admin-secret' }), env);
+  assert.equal(response.status, 422);
+  assert.equal((await response.json()).error, 'response_mode_invalid');
+  assert.equal(called, false);
+});
+
+test('session delete uses the generic gateway event and preserves destination isolation', async (t) => {
+  const env = baseEnv();
+  let captured;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    captured = { url: String(url), options };
+    return new Response(JSON.stringify({ ok: true, eventId: 'delete-event-id' }), {
+      status: 202,
+      headers: { 'content-type': 'application/json' }
+    });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const response = await worker.fetch(new Request(
+    'https://api.asterav8.jp/v1/customer-ai/sessions/session_1234567890',
+    {
+      method: 'DELETE',
+      headers: {
+        origin: 'https://asterav8.jp',
+        'cf-connecting-ip': '203.0.113.10',
+        'x-turnstile-token': 'turnstile-token'
+      }
+    }
+  ), env);
+
+  assert.equal(response.status, 202);
+  const body = await response.json();
+  assert.equal(body.status, 'delete_requested');
+  assert.equal(captured.url, env.WEBHOOK_INTERNAL_API_URL);
+  const event = JSON.parse(captured.options.body);
+  assert.equal(event.eventType, 'customer.ai.session.delete.requested');
+  assert.equal(event.destinationId, 'private-runtime');
+  assert.equal(event.data.session_id, 'session_1234567890');
+  assert.equal('destinationUrl' in event, false);
+});
