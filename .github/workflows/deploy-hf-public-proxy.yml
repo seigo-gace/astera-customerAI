@@ -1,0 +1,50 @@
+name: deploy-public-hf-customer-ai-facade
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'public_proxy.py'
+      - 'scripts/provision_hf_public_proxy.py'
+      - '.deploy/customer-ai-public-proxy'
+      - '.github/workflows/deploy-hf-public-proxy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-public-hf-customer-ai-facade
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN || secrets.HF_KEY }}
+      CUSTOMER_AI_HMAC_SECRET: ${{ secrets.CUSTOMER_AI_HMAC_SECRET }}
+      HF_PRIVATE_SPACE_ID: G-ACE/astera-customerAI
+      HF_PUBLIC_SPACE_ID: G-ACE/astera-customerAI-public
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: main}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13', cache: pip}
+      - uses: actions/setup-node@v4
+        with: {node-version: '22.16.0'}
+      - name: Verify private-repo facade source
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo 'HF_TOKEN missing' >&2; exit 1; }
+          test -n "$CUSTOMER_AI_HMAC_SECRET" || { echo 'CUSTOMER_AI_HMAC_SECRET missing' >&2; exit 1; }
+          python -m pip install --upgrade pip --quiet
+          pip install -r requirements-dev.txt --quiet
+          pip install --upgrade 'huggingface_hub>=1.24.0' 'httpx>=0.28,<1' --quiet
+          python -m py_compile public_proxy.py scripts/provision_hf_public_proxy.py
+          python scripts/review.py --all
+          ruff check . --select E9,F63,F7,F82
+          pytest -q
+          npm test
+      - name: Deploy public facade from private GitHub repository and run E2E
+        run: python scripts/provision_hf_public_proxy.py
