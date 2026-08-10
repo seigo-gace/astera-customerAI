@@ -4,7 +4,7 @@ compatibility_date = "2026-08-10"
 workers_dev = false
 
 [[routes]]
-pattern = "https://api.asterav8.jp/v1/customer-ai/*"
+pattern = "api.asterav8.jp/v1/customer-ai/*"
 zone_name = "asterav8.jp"
 
 [vars]
@@ -14,15 +14,6 @@ MAX_MESSAGE_CHARS = "12000"
 RUNTIME_REQUEST_TIMEOUT_MS = "30000"
 TURNSTILE_EXPECTED_ACTION = "customer_ai"
 TURNSTILE_ALLOWED_HOSTNAMES = "asterav8.jp,www.asterav8.jp,app.asterav8.jp"
-
-[secrets]
-required = [
-  "CUSTOMER_AI_RUNTIME_URL",
-  "CUSTOMER_AI_HMAC_SECRET",
-  "HF_TOKEN",
-  "TURNSTILE_SECRET",
-  "TURNSTILE_SITE_KEY"
-]
 
 [[ratelimits]]
 name = "CUSTOMER_AI_RATE_LIMITER"
