@@ -45,37 +45,6 @@ jobs:
       - name: HF API client unit tests
         if: always()
         run: pytest -q tests/test_model_api.py --junitxml=test-results/model-api.xml
-      - name: Conversation and control runtime tests
-        if: always()
-        run: pytest -q tests/test_control_core.py --junitxml=test-results/control.xml
-      - name: Support preparation feedback and validation tests
-        if: always()
-        run: pytest -q tests/test_support_runtime.py --junitxml=test-results/support.xml
-      - name: API and service integration tests
-        if: always()
-        run: pytest -q tests/test_api.py tests/test_service.py tests/test_public_routing.py --junitxml=test-results/api-service.xml
-      - name: KB v3 adapter and 100-scenario regression
-        if: always()
-        run: pytest -q tests/test_notion_v3.py tests/test_kb_v3_story_matrix_100.py --junitxml=test-results/kb-v3.xml
-      - name: KB security and storage tests
-        if: always()
-        run: pytest -q tests/test_kb.py tests/test_security.py tests/test_storage.py --junitxml=test-results/kb-security-storage.xml
-      - name: Story tests repeated three times
-        if: always()
-        run: |
-          set -euo pipefail
-          for run in 1 2 3; do pytest -q tests/test_story_runtime.py --basetemp=".pytest-story-$run" --junitxml="test-results/story-$run.xml"; done
-      - name: Signed operational runtime tests repeated twice
-        if: always()
-        run: |
-          set -euo pipefail
-          for run in 1 2; do pytest -q tests/test_operational_runtime.py --basetemp=".pytest-operational-$run" --junitxml="test-results/operational-$run.xml"; done
-      - name: V8 runtime tests
-        if: always()
-        run: npm test
-      - name: Full Python regression suite
-        if: always()
-        run: pytest -q --junitxml=test-results/full-regression.xml
       - name: Live HF API smoke from private GitHub workflow
         id: hf_smoke
         if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -127,6 +96,37 @@ jobs:
           git add deployment-evidence/hf-api-smoke.json
           git commit -m 'chore: record HF API smoke evidence [skip ci]' || exit 0
           git push origin HEAD:main
+      - name: Conversation and control runtime tests
+        if: always()
+        run: pytest -q tests/test_control_core.py --junitxml=test-results/control.xml
+      - name: Support preparation feedback and validation tests
+        if: always()
+        run: pytest -q tests/test_support_runtime.py --junitxml=test-results/support.xml
+      - name: API and service integration tests
+        if: always()
+        run: pytest -q tests/test_api.py tests/test_service.py tests/test_public_routing.py --junitxml=test-results/api-service.xml
+      - name: KB v3 adapter and 100-scenario regression
+        if: always()
+        run: pytest -q tests/test_notion_v3.py tests/test_kb_v3_story_matrix_100.py --junitxml=test-results/kb-v3.xml
+      - name: KB security and storage tests
+        if: always()
+        run: pytest -q tests/test_kb.py tests/test_security.py tests/test_storage.py --junitxml=test-results/kb-security-storage.xml
+      - name: Story tests repeated three times
+        if: always()
+        run: |
+          set -euo pipefail
+          for run in 1 2 3; do pytest -q tests/test_story_runtime.py --basetemp=".pytest-story-$run" --junitxml="test-results/story-$run.xml"; done
+      - name: Signed operational runtime tests repeated twice
+        if: always()
+        run: |
+          set -euo pipefail
+          for run in 1 2; do pytest -q tests/test_operational_runtime.py --basetemp=".pytest-operational-$run" --junitxml="test-results/operational-$run.xml"; done
+      - name: V8 runtime tests
+        if: always()
+        run: npm test
+      - name: Full Python regression suite
+        if: always()
+        run: pytest -q --junitxml=test-results/full-regression.xml
       - name: Enforce HF API smoke result
         if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
