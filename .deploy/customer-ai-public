@@ -1,0 +1,3 @@
+deploy=hf-direct-public
+architecture=hp-to-huggingface-sync
+cloudflare_customer_ai=false

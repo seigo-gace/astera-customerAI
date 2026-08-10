@@ -5,11 +5,9 @@
   "failed": 0,
   "score_percent": 0.0,
   "free_model_invoked": false,
-  "failure_stage": "full_master_notion_token_missing",
-  "verification_scope": "full_customerai_master_v2",
-  "finished_at": "2026-07-29T13:59:41.149535+00:00",
+  "failure_stage": "before_baseline_live_story_report",
   "workflow_status": "failure",
-  "workflow_run_id": "30458269214",
-  "workflow_sha": "4d1e86831ecdedb419a1420985356e9c55082c4d",
-  "evidence_persisted_at": "2026-07-29T14:04:16.687552+00:00"
+  "workflow_run_id": "31356675271",
+  "workflow_sha": "97197f8908847ce5ce56c8105e89b0f124c409aa",
+  "evidence_persisted_at": "2026-08-10T04:51:42.181820+00:00"
 }

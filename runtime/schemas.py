@@ -19,6 +19,17 @@ JobStatus = Literal[
     "completed",
     "failed",
 ]
+ResponseMode = Literal[
+    "general",
+    "operation",
+    "billing",
+    "technical",
+    "investor",
+    "support",
+    "trouble",
+    "auto",
+]
+ModeSource = Literal["selected", "auto", "confirmed"]
 
 
 class MessagePayload(BaseModel):
@@ -27,11 +38,22 @@ class MessagePayload(BaseModel):
     message: str = Field(min_length=1, max_length=20000)
     locale: Literal["ja-JP", "en"] = "ja-JP"
     source: Literal["astera-hp", "astera-app", "astera-api"]
+    response_mode: ResponseMode = "auto"
+    mode_source: ModeSource = "auto"
+    current_path: str = Field(default="/", max_length=512)
 
     @field_validator("session_id", "message_id")
     @classmethod
     def safe_identifier(cls, value: str) -> str:
         return validate_identifier(value)
+
+    @field_validator("current_path")
+    @classmethod
+    def safe_current_path(cls, value: str) -> str:
+        path = str(value or "/").strip()
+        if not path.startswith("/") or "://" in path:
+            return "/"
+        return path.split("?", 1)[0].split("#", 1)[0][:512] or "/"
 
 
 class ConversationTurn(BaseModel):
