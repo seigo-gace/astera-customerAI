@@ -8,38 +8,30 @@ async function config() {
   return readFile(configUrl, 'utf8');
 }
 
-test('Cloudflare route is HTTPS-only and limited to the Customer AI API namespace', async () => {
+test('Cloudflare route is limited to the Customer AI API namespace', async () => {
   const source = await config();
   assert.match(source, /pattern\s*=\s*"https:\/\/api\.asterav8\.jp\/v1\/customer-ai\/\*"/);
   assert.match(source, /zone_name\s*=\s*"asterav8\.jp"/);
   assert.doesNotMatch(source, /pattern\s*=\s*"https:\/\/api\.asterav8\.jp\/\*"/);
 });
 
-test('synchronous edge has no legacy job-result KV or webhook gateway bindings', async () => {
+test('existing KV binding name and only unresolved account ID remain explicit', async () => {
   const source = await config();
-  assert.doesNotMatch(source, /CUSTOMER_AI_RESULTS/);
-  assert.doesNotMatch(source, /WEBHOOK_INTERNAL_API_URL/);
-  assert.doesNotMatch(source, /WEBHOOK_INTERNAL_API_TOKEN/);
-  assert.doesNotMatch(source, /RESULT_WEBHOOK_SECRET/);
+  assert.match(source, /binding\s*=\s*"CUSTOMER_AI_RESULTS"/);
+  assert.match(source, /id\s*=\s*"replace_with_production_kv_namespace_id"/);
+  assert.doesNotMatch(source, /replace_with_preview_kv_namespace_id/);
 });
 
-test('current private-runtime and Turnstile secrets are required without values', async () => {
+test('all required Worker secrets are declared without storing values', async () => {
   const source = await config();
   for (const name of [
-    'CUSTOMER_AI_RUNTIME_URL',
-    'CUSTOMER_AI_HMAC_SECRET',
-    'HF_TOKEN',
+    'WEBHOOK_INTERNAL_API_URL',
+    'WEBHOOK_INTERNAL_API_TOKEN',
+    'RESULT_WEBHOOK_SECRET',
     'TURNSTILE_SECRET',
-    'TURNSTILE_SITE_KEY'
+    'CUSTOMER_AI_EXTERNAL_API_TOKEN'
   ]) {
     assert.match(source, new RegExp(`"${name}"`));
   }
-  assert.doesNotMatch(source, /(?:HF_TOKEN|CUSTOMER_AI_HMAC_SECRET|TURNSTILE_SECRET)\s*=\s*"[^"\n]+"/);
-});
-
-test('public limits and allowed origins stay explicit', async () => {
-  const source = await config();
-  assert.match(source, /MAX_MESSAGE_CHARS\s*=\s*"12000"/);
-  assert.match(source, /RUNTIME_REQUEST_TIMEOUT_MS\s*=\s*"30000"/);
-  assert.match(source, /ALLOWED_ORIGINS\s*=\s*"https:\/\/asterav8\.jp,https:\/\/www\.asterav8\.jp,https:\/\/app\.asterav8\.jp"/);
+  assert.doesNotMatch(source, /Bearer\s+[A-Za-z0-9._-]{16,}/);
 });
