@@ -1,0 +1,163 @@
+name: diagnose-existing-hf-space
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/diagnose-existing-hf-space.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      HF_TOKEN_PRIMARY: ${{ secrets.HF_TOKEN }}
+      HF_TOKEN_FALLBACK: ${{ secrets.HF_KEY }}
+      TARGET_SPACE: G-ACE/astera-customerAI
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Probe existing Space and Customer AI endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip --quiet
+          pip install 'huggingface_hub>=1.24.0' 'httpx>=0.28,<1' --quiet
+          python - <<'PY'
+          import json
+          import os
+          import time
+          from pathlib import Path
+          import httpx
+          from huggingface_hub import HfApi
+
+          target = os.environ['TARGET_SPACE'].strip()
+          selected = None
+          for label, token in [
+              ('HF_TOKEN', os.environ.get('HF_TOKEN_PRIMARY', '').strip()),
+              ('HF_KEY', os.environ.get('HF_TOKEN_FALLBACK', '').strip()),
+          ]:
+              if not token:
+                  continue
+              try:
+                  info = HfApi(token=token).whoami()
+              except Exception:
+                  continue
+              if str(info.get('name') or '') == 'G-ACE':
+                  selected = (label, token, bool(info.get('isPro')))
+                  break
+          if selected is None:
+              raise SystemExit('NO_G_ACE_HF_TOKEN_AVAILABLE')
+
+          label, token, is_pro = selected
+          print('::add-mask::' + token)
+          api = HfApi(token=token)
+          info = api.space_info(target, expand=['subdomain', 'sha', 'private', 'runtime'])
+          subdomain = str(info.subdomain or '').strip()
+          url = f'https://{subdomain}.hf.space' if subdomain else ''
+          private = bool(info.private)
+          runtime = info.runtime
+          runtime_stage = str(getattr(runtime, 'stage', '') or '')
+          runtime_hardware = str(getattr(runtime, 'hardware', '') or '')
+          headers_auth = {'authorization': f'Bearer {token}'}
+
+          result = {
+              'target_space': target,
+              'authenticated_account': 'G-ACE',
+              'is_pro': is_pro,
+              'token_source': label,
+              'space_private': private,
+              'space_sha': str(info.sha or ''),
+              'space_subdomain': subdomain,
+              'space_url': url,
+              'runtime_stage': runtime_stage,
+              'runtime_hardware': runtime_hardware,
+              'public_healthz_status': None,
+              'public_readyz_status': None,
+              'authenticated_readyz_status': None,
+              'public_respond_status': None,
+              'authenticated_respond_status': None,
+              'respond_has_answer': False,
+              'respond_detail': '',
+              'run_id': os.environ.get('GITHUB_RUN_ID', ''),
+              'source_sha': os.environ.get('GITHUB_SHA', ''),
+          }
+
+          def get(path, headers=None):
+              try:
+                  r = httpx.get(url + path, headers=headers or {}, timeout=25, follow_redirects=True)
+                  return r.status_code, r.text[:1000]
+              except Exception as e:
+                  return 0, f'{type(e).__name__}:{e}'
+
+          def post(headers=None):
+              suffix = str(int(time.time()))
+              payload = {
+                  'session_id': f'session_diag_{suffix}',
+                  'message_id': f'message_diag_{suffix}',
+                  'message': '料金を教えて',
+                  'locale': 'ja-JP',
+                  'source': 'astera-hp',
+                  'response_mode': 'billing',
+                  'mode_source': 'selected',
+                  'current_path': '/ja/',
+              }
+              merged = {'origin': 'https://asterav8.jp', 'content-type': 'application/json'}
+              if headers:
+                  merged.update(headers)
+              try:
+                  r = httpx.post(url + '/respond', json=payload, headers=merged, timeout=90, follow_redirects=True)
+                  return r.status_code, r.text[:3000]
+              except Exception as e:
+                  return 0, f'{type(e).__name__}:{e}'
+
+          if url:
+              result['public_healthz_status'], _ = get('/healthz')
+              result['public_readyz_status'], public_ready_body = get('/readyz')
+              result['authenticated_readyz_status'], auth_ready_body = get('/readyz', headers_auth)
+              result['public_respond_status'], public_body = post()
+              result['authenticated_respond_status'], auth_body = post(headers_auth)
+
+              body = public_body if result['public_respond_status'] == 200 else auth_body
+              try:
+                  parsed = json.loads(body)
+                  result['respond_has_answer'] = bool(str(parsed.get('answer') or parsed.get('clarification') or '').strip())
+                  detail = parsed.get('detail') or parsed.get('error') or ''
+                  result['respond_detail'] = str(detail)[:800]
+              except Exception:
+                  result['respond_detail'] = body[:800]
+
+              if result['public_readyz_status'] != 200 and result['authenticated_readyz_status'] != 200:
+                  result['respond_detail'] = ('ready_public=' + public_ready_body[:300] + '; ready_auth=' + auth_ready_body[:300])[:800]
+
+          Path('deployment-evidence').mkdir(exist_ok=True)
+          Path('deployment-evidence/hf-space-runtime-diagnostic.json').write_text(
+              json.dumps(result, ensure_ascii=False, indent=2) + '\n', encoding='utf-8'
+          )
+          print('HF_SPACE_RUNTIME_DIAGNOSTIC=' + json.dumps({k: result[k] for k in [
+              'space_private','runtime_stage','public_healthz_status','public_readyz_status',
+              'authenticated_readyz_status','public_respond_status','authenticated_respond_status','respond_has_answer'
+          ]}, ensure_ascii=False))
+          PY
+      - name: Persist diagnostic evidence and remove one-time workflow
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          if [ -f deployment-evidence/hf-space-runtime-diagnostic.json ]; then
+            git add deployment-evidence/hf-space-runtime-diagnostic.json
+          fi
+          git rm .github/workflows/diagnose-existing-hf-space.yml
+          git commit -m 'test: record existing HF Space runtime diagnostic'
+          git push origin HEAD:main
