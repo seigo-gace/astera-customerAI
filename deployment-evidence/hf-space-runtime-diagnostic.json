@@ -1,0 +1,21 @@
+{
+  "target_space": "G-ACE/astera-customerAI",
+  "authenticated_account": "G-ACE",
+  "is_pro": true,
+  "token_source": "HF_KEY",
+  "space_private": true,
+  "space_sha": "7ea57c88b905b19ce323cb35b7716493f58feadb",
+  "space_subdomain": "g-ace-astera-customerai",
+  "space_url": "https://g-ace-astera-customerai.hf.space",
+  "runtime_stage": "CONFIG_ERROR",
+  "runtime_hardware": "",
+  "public_healthz_status": 404,
+  "public_readyz_status": 404,
+  "authenticated_readyz_status": 503,
+  "public_respond_status": 404,
+  "authenticated_respond_status": 503,
+  "respond_has_answer": false,
+  "respond_detail": "ready_public=<!DOCTYPE html>\n<html class=\"\">\n<head>\n    <meta charset=\"utf-8\"/>\n    <meta\n            name=\"viewport\"\n            content=\"width=device-width, initial-scale=1.0, user-scalable=no\"\n    />\n    <meta\n            name=\"description\"\n            content=\"We’re on a journey to advance and democratize ar; ready_auth=Your space is in error, check its status on hf.co",
+  "run_id": "31430939713",
+  "source_sha": "433c12c8439f8e691f77a90493df1c134c8ddf7a"
+}
