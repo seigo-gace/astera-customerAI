@@ -19,15 +19,19 @@ jobs:
           node-version: '22.16.0'
       - run: python -m pip install --upgrade pip --quiet
       - run: pip install -r requirements-dev.txt --quiet
+      - run: pip install 'cryptography>=45,<47' 'huggingface_hub>=1.24.0' --quiet
       - run: mkdir -p test-results
       - name: Review architecture and syntax
         run: python scripts/review.py --all
       - name: Ruff fatal checks
         if: always()
         run: ruff check . --select E9,F63,F7,F82
-      - name: Public facade syntax
+      - name: Public HF boundary syntax
         if: always()
-        run: python -m py_compile public_proxy.py scripts/provision_hf_public_proxy.py
+        run: python -m py_compile public_app.py scripts/provision_hf_public.py
+      - name: Public HF boundary contract tests
+        if: always()
+        run: pytest -q tests/test_public_hf_api.py --junitxml=test-results/public-hf.xml
       - name: Conversation and control runtime tests
         if: always()
         run: pytest -q tests/test_control_core.py --junitxml=test-results/control.xml
