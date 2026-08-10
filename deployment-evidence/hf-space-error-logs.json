@@ -1,0 +1,26 @@
+{
+  "target_space": "G-ACE/astera-customerAI",
+  "runtime_stage": "CONFIG_ERROR",
+  "runtime_raw": {
+    "stage": "CONFIG_ERROR",
+    "hardware": {
+      "current": null,
+      "requested": "cpu-basic"
+    },
+    "gcTimeout": 172800,
+    "errorMessage": "Collision on variables and secrets names",
+    "replicas": {
+      "requested": 1
+    },
+    "domains": [
+      {
+        "domain": "g-ace-astera-customerai.hf.space",
+        "stage": "READY"
+      }
+    ]
+  },
+  "build_logs_tail": [],
+  "run_logs_tail": [],
+  "run_id": "31431003893",
+  "source_sha": "b8ab2bfae7da7b91882a2f8a9bf46d645174f2db"
+}
