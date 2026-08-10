@@ -3,4 +3,4 @@ architecture=hp-to-existing-hf-customer-ai-api-encrypted-private-github-runtime
 private_source_repo=seigo-gace/astera-customerAI
 cloudflare_customer_ai=false
 target_space=G-ACE/astera-customerAI
-trigger=2026-08-11T05:40:00+09:00
+trigger=2026-08-11T05:49:00+09:00
