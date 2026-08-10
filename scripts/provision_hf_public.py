@@ -45,10 +45,7 @@ def runtime_bundle() -> bytes:
                     or child.suffix == ".pyc"
                 ):
                     continue
-                archive.add(
-                    child,
-                    arcname=str(child.relative_to(ROOT)),
-                )
+                archive.add(child, arcname=str(child.relative_to(ROOT)))
     return stream.getvalue()
 
 
@@ -79,9 +76,7 @@ if __name__ == "__main__":
 
 
 def read_requirements() -> str:
-    base = (ROOT / "requirements.txt").read_text(
-        encoding="utf-8"
-    ).strip()
+    base = (ROOT / "requirements.txt").read_text(encoding="utf-8").strip()
     return base + "\ncryptography>=45,<47\n"
 
 
@@ -98,29 +93,50 @@ def public_url(api: HfApi) -> str:
     return f"https://{subdomain}.hf.space"
 
 
+def ensure_public_space(api: HfApi, volume: Volume) -> None:
+    try:
+        info = api.space_info(
+            SPACE_ID,
+            expand=["subdomain", "sha", "private", "runtime"],
+        )
+    except Exception as error:
+        response = getattr(error, "response", None)
+        if response is None or getattr(response, "status_code", None) != 404:
+            raise
+        api.create_repo(
+            repo_id=SPACE_ID,
+            repo_type="space",
+            private=False,
+            exist_ok=False,
+            space_sdk="gradio",
+            space_volumes=[volume],
+        )
+        print("HF_PUBLIC_SPACE_REUSED=false")
+        return
+
+    if info.private:
+        api.update_repo_settings(
+            repo_id=SPACE_ID,
+            repo_type="space",
+            private=False,
+        )
+    print("HF_PUBLIC_SPACE_REUSED=true")
+
+
 def wait_health(url: str) -> None:
     last = ""
     for attempt in range(45):
         try:
-            response = httpx.get(
-                url + "/healthz",
-                timeout=20,
-                follow_redirects=True,
-            )
+            response = httpx.get(url + "/healthz", timeout=20, follow_redirects=True)
             last = f"{response.status_code}:{response.text[:200]}"
-            if (
-                response.status_code == 200
-                and response.json().get("status") == "ok"
-            ):
+            if response.status_code == 200 and response.json().get("status") == "ok":
                 print("HF_PUBLIC_CUSTOMER_AI_HEALTH_OK")
                 return
         except Exception as error:
             last = repr(error)
         if attempt < 44:
             time.sleep(10)
-    raise RuntimeError(
-        f"HF_PUBLIC_CUSTOMER_AI_HEALTH_TIMEOUT:{last}"
-    )
+    raise RuntimeError(f"HF_PUBLIC_CUSTOMER_AI_HEALTH_TIMEOUT:{last}")
 
 
 def live_e2e(url: str) -> None:
@@ -147,11 +163,7 @@ def live_e2e(url: str) -> None:
             last = f"{response.status_code}:{response.text[:500]}"
             if response.status_code == 200:
                 body = response.json()
-                answer = str(
-                    body.get("answer")
-                    or body.get("clarification")
-                    or ""
-                ).strip()
+                answer = str(body.get("answer") or body.get("clarification") or "").strip()
                 if answer:
                     print("HF_PUBLIC_CUSTOMER_AI_E2E_OK")
                     print(
@@ -170,9 +182,7 @@ def live_e2e(url: str) -> None:
             last = repr(error)
         if attempt < 5:
             time.sleep(10)
-    raise RuntimeError(
-        f"HF_PUBLIC_CUSTOMER_AI_E2E_FAILED:{last}"
-    )
+    raise RuntimeError(f"HF_PUBLIC_CUSTOMER_AI_E2E_FAILED:{last}")
 
 
 def main() -> None:
@@ -187,33 +197,12 @@ def main() -> None:
         mount_path="/data/customer-ai",
         read_only=False,
     )
-    api.create_repo(
-        repo_id=SPACE_ID,
-        repo_type="space",
-        private=False,
-        exist_ok=True,
-        space_sdk="gradio",
-        space_volumes=[volume],
-    )
-    api.update_repo_settings(
-        repo_id=SPACE_ID,
-        repo_type="space",
-        private=False,
-    )
-    api.set_space_volumes(SPACE_ID, volumes=[volume])
+    ensure_public_space(api, volume)
 
     bundle_key = Fernet.generate_key().decode()
-    api.add_space_secret(
-        SPACE_ID,
-        key="CUSTOMER_AI_BUNDLE_KEY",
-        value=bundle_key,
-    )
+    api.add_space_secret(SPACE_ID, key="CUSTOMER_AI_BUNDLE_KEY", value=bundle_key)
     if notion_token:
-        api.add_space_secret(
-            SPACE_ID,
-            key="NOTION_TOKEN",
-            value=notion_token,
-        )
+        api.add_space_secret(SPACE_ID, key="NOTION_TOKEN", value=notion_token)
         print("HF_PUBLIC_NOTION_SECRET_UPDATED=true")
     else:
         print("HF_PUBLIC_NOTION_SECRET_UPDATED=false")
@@ -227,20 +216,12 @@ def main() -> None:
         "CUSTOMER_AI_DATA_ROOT": "/data/customer-ai",
         "NOTION_DATA_SOURCE_ID": V3_DATA_SOURCE_ID,
         "CUSTOMER_AI_KB_SCHEMA": "v3",
-        "CUSTOMER_AI_PUBLIC_ORIGINS": (
-            "https://asterav8.jp,https://www.asterav8.jp"
-        ),
-        "CUSTOMER_AI_MODEL_ID": os.environ.get(
-            "CUSTOMER_AI_MODEL_ID",
-            "Qwen/Qwen3-0.6B",
-        ),
+        "CUSTOMER_AI_PUBLIC_ORIGINS": "https://asterav8.jp,https://www.asterav8.jp",
+        "CUSTOMER_AI_MODEL_ID": os.environ.get("CUSTOMER_AI_MODEL_ID", "Qwen/Qwen3-0.6B"),
         "CUSTOMER_AI_MODEL_REVISION": os.environ.get(
-            "CUSTOMER_AI_MODEL_REVISION",
-            "c1899de289a04d12100db370d81485cdf75e47ca",
+            "CUSTOMER_AI_MODEL_REVISION", "c1899de289a04d12100db370d81485cdf75e47ca"
         ),
-        "CUSTOMER_AI_ENABLE_MODEL": os.environ.get(
-            "CUSTOMER_AI_ENABLE_MODEL", "1"
-        ),
+        "CUSTOMER_AI_ENABLE_MODEL": os.environ.get("CUSTOMER_AI_ENABLE_MODEL", "1"),
         "CUSTOMER_AI_NODE_BINARY": "node",
         "CUSTOMER_AI_NODE_SOCKET": "/tmp/customer-ai-v8.sock",
         "CUSTOMER_AI_NODE_MEMORY_MB": "384",
@@ -249,24 +230,16 @@ def main() -> None:
         "CUSTOMER_AI_SESSION_CACHE_MAX_TURNS": "12",
         "CUSTOMER_AI_KB_CACHE_TTL_SECONDS": "120",
         "CUSTOMER_AI_KB_CACHE_MAX_ENTRIES": "512",
-        "DEPLOYED_GITHUB_COMMIT": os.environ.get(
-            "GITHUB_SHA", "manual"
-        ),
+        "DEPLOYED_GITHUB_COMMIT": os.environ.get("GITHUB_SHA", "manual"),
     }
     for key, value in variables.items():
         api.add_space_variable(SPACE_ID, key=key, value=value)
 
     encrypted = Fernet(bundle_key.encode()).encrypt(runtime_bundle())
-    with tempfile.TemporaryDirectory(
-        prefix="astera-public-space-"
-    ) as temporary:
+    with tempfile.TemporaryDirectory(prefix="astera-public-space-") as temporary:
         target = Path(temporary)
-        (target / "bootstrap.py").write_text(
-            bootstrap_source(), encoding="utf-8"
-        )
-        (target / "requirements.txt").write_text(
-            read_requirements(), encoding="utf-8"
-        )
+        (target / "bootstrap.py").write_text(bootstrap_source(), encoding="utf-8")
+        (target / "requirements.txt").write_text(read_requirements(), encoding="utf-8")
         (target / "runtime.bundle.enc").write_bytes(encrypted)
         (target / "README.md").write_text(
             "---\n"
@@ -289,10 +262,7 @@ def main() -> None:
             repo_id=SPACE_ID,
             repo_type="space",
             folder_path=str(target),
-            commit_message=(
-                "Deploy public Customer AI "
-                f"{os.environ.get('GITHUB_SHA', 'manual')}"
-            ),
+            commit_message=f"Deploy public Customer AI {os.environ.get('GITHUB_SHA', 'manual')}",
         )
 
     url = public_url(api)
