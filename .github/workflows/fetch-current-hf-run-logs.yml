@@ -1,0 +1,66 @@
+name: fetch-current-hf-run-logs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fetch-current-hf-run-logs.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  logs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      HF_TOKEN_PRIMARY: ${{ secrets.HF_TOKEN }}
+      HF_TOKEN_FALLBACK: ${{ secrets.HF_KEY }}
+      TARGET_SPACE: G-ACE/astera-customerAI
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: main, fetch-depth: 1}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - name: Fetch current Space run logs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip --quiet
+          pip install 'huggingface_hub>=1.24.0' --quiet
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from huggingface_hub import HfApi
+          selected=None
+          for label,token in [('HF_TOKEN',os.environ.get('HF_TOKEN_PRIMARY','').strip()),('HF_KEY',os.environ.get('HF_TOKEN_FALLBACK','').strip())]:
+              if not token: continue
+              try: who=HfApi(token=token).whoami()
+              except Exception: continue
+              if str(who.get('name') or '')=='G-ACE': selected=(label,token); break
+          if not selected: raise SystemExit('NO_G_ACE_HF_TOKEN_AVAILABLE')
+          label,token=selected; print('::add-mask::'+token)
+          api=HfApi(token=token); target=os.environ['TARGET_SPACE']
+          runtime=api.get_space_runtime(target)
+          lines=[]
+          try:
+              for line in api.fetch_space_logs(repo_id=target, build=False, follow=False):
+                  lines.append(str(line).rstrip('\n'))
+          except Exception as error:
+              lines.append(f'LOG_FETCH_ERROR:{type(error).__name__}:{error}')
+          payload={'target_space':target,'runtime_stage':str(runtime.stage or ''),'run_logs_tail':lines[-300:],'run_id':os.environ.get('GITHUB_RUN_ID',''),'source_sha':os.environ.get('GITHUB_SHA','')}
+          Path('deployment-evidence').mkdir(exist_ok=True)
+          Path('deployment-evidence/hf-space-current-run-logs.json').write_text(json.dumps(payload,ensure_ascii=False,indent=2,default=str)+'\n',encoding='utf-8')
+          for line in lines[-80:]: print('HF_RUN_LOG='+line[:2000])
+          PY
+      - name: Persist logs and remove one-time workflow
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          if [ -f deployment-evidence/hf-space-current-run-logs.json ]; then git add deployment-evidence/hf-space-current-run-logs.json; fi
+          git rm .github/workflows/fetch-current-hf-run-logs.yml
+          git commit -m 'test: record Customer AI Space run logs'
+          git push origin HEAD:main
