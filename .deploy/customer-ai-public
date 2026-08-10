@@ -1,4 +1,0 @@
-deploy=hf-direct-public
-architecture=hp-to-huggingface-sync
-cloudflare_customer_ai=false
-requested_at=2026-08-10T09:55:00Z
