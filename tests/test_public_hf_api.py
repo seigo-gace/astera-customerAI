@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+
+os.environ.setdefault("CUSTOMER_AI_DATA_ROOT", "/tmp/customer-ai-public-test")
+
 import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
