@@ -25,7 +25,7 @@ jobs:
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN || secrets.HF_KEY }}
       NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-      HF_PUBLIC_SPACE_ID: G-ACE/astera-customerAI-public
+      HF_PUBLIC_SPACE_ID: G-ACE/astera-customerAI
       CUSTOMER_AI_MODEL_ID: Qwen/Qwen3-0.6B
       CUSTOMER_AI_MODEL_REVISION: c1899de289a04d12100db370d81485cdf75e47ca
       CUSTOMER_AI_ENABLE_MODEL: '1'
@@ -79,7 +79,7 @@ jobs:
               'live_e2e': os.environ.get('LIVE_OUTCOME', 'unknown'),
               'e2e_marker': 'HF_PUBLIC_CUSTOMER_AI_E2E_OK' in log,
               'architecture': 'GitHub Pages HP -> HF public thin boundary -> encrypted private Customer AI runtime -> HF Inference API',
-              'public_space': 'G-ACE/astera-customerAI-public',
+              'public_space': 'G-ACE/astera-customerAI',
               'public_url': match.group(1) if match else '',
               'private_source_repo': 'seigo-gace/astera-customerAI',
               'source_sha': os.environ['GITHUB_SHA'],
