@@ -17,7 +17,7 @@ from huggingface_hub.errors import RepositoryNotFoundError
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN = os.environ.get("HF_TOKEN", "").strip()
 SPACE_ID = os.environ.get(
-    "HF_PUBLIC_SPACE_ID", "G-ACE/astera-customerAI-public"
+    "HF_PUBLIC_SPACE_ID", "G-ACE/astera-customerAI"
 ).strip()
 V3_DATA_SOURCE_ID = "e8f1bcaa-8e1f-482f-97db-f90542699e4a"
 BUNDLED_NOTION_TOKEN = "bundled:hp-public-v2"
@@ -133,15 +133,31 @@ def space_info(api: HfApi):
 def ensure_space(api: HfApi):
     try:
         return space_info(api), False
-    except RepositoryNotFoundError:
-        api.create_repo(
-            repo_id=SPACE_ID,
-            repo_type="space",
-            private=True,
-            exist_ok=True,
-            space_sdk="docker",
-        )
-        return space_info(api), True
+    except RepositoryNotFoundError as error:
+        raise RuntimeError("EXISTING_CUSTOMER_AI_SPACE_MISSING") from error
+
+
+def reconcile_space_config_types(
+    api: HfApi,
+    *,
+    variable_keys: set[str],
+    secret_keys: set[str],
+) -> None:
+    existing_variables = set(api.get_space_variables(SPACE_ID).keys())
+    existing_secrets = set(api.get_space_secrets(SPACE_ID).keys())
+
+    wrong_variables = sorted(secret_keys & existing_variables)
+    wrong_secrets = sorted(variable_keys & existing_secrets)
+
+    for key in wrong_variables:
+        api.delete_space_variable(SPACE_ID, key=key)
+        print(f"HF_SPACE_CONFIG_REMOVED_WRONG_VARIABLE={key}")
+    for key in wrong_secrets:
+        api.delete_space_secret(SPACE_ID, key=key)
+        print(f"HF_SPACE_CONFIG_REMOVED_WRONG_SECRET={key}")
+
+    if not wrong_variables and not wrong_secrets:
+        print("HF_SPACE_CONFIG_TYPE_COLLISIONS=none")
 
 
 def space_url(api: HfApi) -> str:
@@ -265,12 +281,6 @@ def main() -> None:
     print(f"HF_PUBLIC_SPACE_CREATED={str(created).lower()}")
     print(f"HF_PUBLIC_SPACE_START_PRIVATE={str(bool(info.private)).lower()}")
 
-    bundle_key = Fernet.generate_key().decode()
-    api.add_space_secret(SPACE_ID, key="CUSTOMER_AI_BUNDLE_KEY", value=bundle_key)
-    api.add_space_secret(SPACE_ID, key="HF_TOKEN", value=TOKEN)
-    api.add_space_secret(SPACE_ID, key="NOTION_TOKEN", value=runtime_notion_token)
-    print(f"HF_PUBLIC_NOTION_SOURCE={'live' if notion_token else 'bundled'}")
-
     variables = {
         "CUSTOMER_AI_DATA_ROOT": "/tmp/customer-ai",
         "NOTION_DATA_SOURCE_ID": V3_DATA_SOURCE_ID,
@@ -291,6 +301,19 @@ def main() -> None:
         "CUSTOMER_AI_KB_CACHE_MAX_ENTRIES": "512",
         "DEPLOYED_GITHUB_COMMIT": os.environ.get("GITHUB_SHA", "manual"),
     }
+    secret_keys = {"CUSTOMER_AI_BUNDLE_KEY", "HF_TOKEN", "NOTION_TOKEN"}
+    reconcile_space_config_types(
+        api,
+        variable_keys=set(variables),
+        secret_keys=secret_keys,
+    )
+
+    bundle_key = Fernet.generate_key().decode()
+    api.add_space_secret(SPACE_ID, key="CUSTOMER_AI_BUNDLE_KEY", value=bundle_key)
+    api.add_space_secret(SPACE_ID, key="HF_TOKEN", value=TOKEN)
+    api.add_space_secret(SPACE_ID, key="NOTION_TOKEN", value=runtime_notion_token)
+    print(f"HF_PUBLIC_NOTION_SOURCE={'live' if notion_token else 'bundled'}")
+
     for key, value in variables.items():
         api.add_space_variable(SPACE_ID, key=key, value=value)
 
