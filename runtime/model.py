@@ -3,55 +3,47 @@ from __future__ import annotations
 import json
 import os
 import re
-import threading
-import time
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 from .config import Settings
 
 
 MISSING_KB_ANSWER = "現在、該当する正確な案内情報が登録されていません"
-_MODEL_LOCK = threading.Lock()
-_MODEL: Any = None
-_TOKENIZER: Any = None
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_DEFAULT_HF_API_URL = "https://router.huggingface.co/v1/chat/completions"
 
 
-def _load_model(model_id: str, revision: str) -> tuple[Any, Any]:
-    global _MODEL, _TOKENIZER
-    with _MODEL_LOCK:
-        if _MODEL is None or _TOKENIZER is None:
-            import torch
-            from transformers import AutoModelForCausalLM, AutoTokenizer
-
-            torch.set_num_threads(max(1, min(4, os.cpu_count() or 1)))
-            _TOKENIZER = AutoTokenizer.from_pretrained(
-                model_id,
-                revision=revision,
-                trust_remote_code=False,
-            )
-            _MODEL = AutoModelForCausalLM.from_pretrained(
-                model_id,
-                revision=revision,
-                trust_remote_code=False,
-                torch_dtype=torch.float32,
-                device_map=None,
-                attn_implementation="eager",
-            )
-            _MODEL.eval()
-        return _MODEL, _TOKENIZER
+def _hf_token() -> str:
+    return os.getenv("HF_TOKEN", "").strip()
 
 
-def _generate_local(
+def _hf_api_url() -> str:
+    return os.getenv("CUSTOMER_AI_HF_API_URL", _DEFAULT_HF_API_URL).strip() or _DEFAULT_HF_API_URL
+
+
+def _hf_timeout_seconds() -> float:
+    raw = os.getenv("CUSTOMER_AI_HF_TIMEOUT_SECONDS", "30").strip()
+    try:
+        value = float(raw)
+    except ValueError as error:
+        raise ValueError("CUSTOMER_AI_HF_TIMEOUT_SECONDS must be numeric") from error
+    if value <= 0 or value > 120:
+        raise ValueError("CUSTOMER_AI_HF_TIMEOUT_SECONDS must be > 0 and <= 120")
+    return value
+
+
+def _generate_remote(
     model_id: str,
-    revision: str,
     packet: str,
     max_new_tokens: int,
 ) -> str:
-    import torch
+    token = _hf_token()
+    if not token:
+        raise RuntimeError("hf_token_missing")
 
-    model, tokenizer = _load_model(model_id, revision)
     instruction = (
         "あなたはAstera Customer AIの回答文整形Componentです。"
         "Request内のdeterministic_answerだけを、意味・条件・実装状態を変えずに読みやすい日本語へ整えてください。"
@@ -61,35 +53,59 @@ def _generate_local(
         "担当者や窓口への誘導、挨拶、前置き、感想、MarkdownのCode Fenceを追加しないでください。"
         "返すのは回答本文だけです。/no_think\n"
     )
-    messages = [{"role": "user", "content": instruction + packet}]
+    response = httpx.post(
+        _hf_api_url(),
+        headers={
+            "authorization": f"Bearer {token}",
+            "content-type": "application/json",
+            "accept": "application/json",
+        },
+        json={
+            "model": model_id,
+            "messages": [{"role": "user", "content": instruction + packet}],
+            "max_tokens": max_new_tokens,
+            "temperature": 0,
+            "stream": False,
+        },
+        timeout=httpx.Timeout(_hf_timeout_seconds()),
+        follow_redirects=True,
+    )
+    if response.status_code == 401:
+        raise RuntimeError("hf_api_unauthorized")
+    if response.status_code == 402:
+        raise RuntimeError("hf_api_payment_required")
+    if response.status_code == 429:
+        raise RuntimeError("hf_api_rate_limited")
+    if response.status_code >= 500:
+        raise RuntimeError(f"hf_api_unavailable:{response.status_code}")
+    if response.status_code >= 400:
+        raise RuntimeError(f"hf_api_failed:{response.status_code}")
+
     try:
-        text = tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-            enable_thinking=False,
-        )
-    except TypeError:
-        text = tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-    inputs = tokenizer(text, return_tensors="pt")
-    with torch.inference_mode():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            use_cache=True,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-    generated = outputs[0][inputs["input_ids"].shape[1] :]
-    return tokenizer.decode(generated, skip_special_tokens=True)
+        payload = response.json()
+    except ValueError as error:
+        raise RuntimeError("hf_api_invalid_json") from error
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise RuntimeError("hf_api_invalid_response")
+    first = choices[0]
+    if not isinstance(first, dict):
+        raise RuntimeError("hf_api_invalid_response")
+    message = first.get("message")
+    if not isinstance(message, dict):
+        raise RuntimeError("hf_api_invalid_response")
+    content = message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise RuntimeError("hf_api_empty_response")
+    return content
 
 
 class GPUUsageLedger:
-    """Bounded local-model execution ledger retained for compatibility."""
+    """Compatibility shim retained for existing runtime state paths.
+
+    Remote HF API execution does not load or meter a local GPU model. The file
+    remains to avoid breaking callers/tests that expect the ledger object.
+    """
 
     def __init__(self, root: Path, budget_seconds: int):
         self.path = root / "runtime" / "gpu-usage.jsonl"
@@ -97,27 +113,13 @@ class GPUUsageLedger:
         self.budget_seconds = budget_seconds
 
     def used_seconds(self) -> float:
-        if not self.path.exists():
-            return 0.0
-        cutoff = time.time() - 86400
-        total = 0.0
-        for line in self.path.read_text(encoding="utf-8").splitlines():
-            try:
-                row = json.loads(line)
-                if float(row["timestamp"]) >= cutoff:
-                    total += float(row["seconds"])
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                continue
-        return total
+        return 0.0
 
     def can_use(self, reserve_seconds: int = 45) -> bool:
-        return self.used_seconds() + reserve_seconds <= self.budget_seconds
+        return True
 
     def record(self, seconds: float) -> None:
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(
-                json.dumps({"timestamp": time.time(), "seconds": seconds}) + "\n"
-            )
+        return None
 
 
 class ConversationLanguageEngine:
@@ -133,8 +135,7 @@ class ConversationLanguageEngine:
         return bool(
             self.settings.enable_model
             and self.settings.model_id
-            and self.settings.model_revision
-            and self.ledger.can_use()
+            and _hf_token()
         )
 
     def execute(self, packet: dict[str, Any]) -> dict[str, Any]:
@@ -142,7 +143,7 @@ class ConversationLanguageEngine:
         if missing:
             raise ValueError("support_packet_missing:" + ",".join(missing))
         if not self.available():
-            raise RuntimeError("model_unavailable_or_budget_exhausted")
+            raise RuntimeError("model_unavailable_or_hf_token_missing")
         safe_packet = self._sanitize_packet(packet)
         if not safe_packet["question_tasks"]:
             raise ValueError("support_packet_invalid:question_tasks")
@@ -168,14 +169,11 @@ class ConversationLanguageEngine:
             separators=(",", ":"),
             default=str,
         )
-        started = time.monotonic()
-        raw = _generate_local(
+        raw = _generate_remote(
             self.settings.model_id,
-            self.settings.model_revision,
             serialized,
             600,
         )
-        self.ledger.record(time.monotonic() - started)
         answer = self._clean_answer(raw)
         if not answer:
             raise ValueError("model_schema_invalid:answer")
