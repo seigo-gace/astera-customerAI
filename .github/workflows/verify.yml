@@ -51,6 +51,9 @@ jobs:
       - name: HP runtime contract tests
         if: always()
         run: pytest -q tests/test_hp_runtime.py --junitxml=test-results/hp-runtime.xml
+      - name: Build deployable HP runtime container
+        if: always()
+        run: docker build --file Dockerfile.hp-runtime --tag astera-customer-ai-hp-runtime:${GITHUB_SHA} .
       - name: Live HF API smoke from private GitHub workflow
         id: hf_smoke
         if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
