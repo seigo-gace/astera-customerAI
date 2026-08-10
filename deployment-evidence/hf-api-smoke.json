@@ -1,10 +1,11 @@
 {
-  "source_sha": "b7f8101a8a8804455fc6b11b2bb2f32f6d0ebebb",
-  "run_id": "31421437622",
+  "source_sha": "e20cb1dd482b51132a5cb545367db04bfa9cee75",
+  "run_id": "31423144012",
   "hf_api_smoke": "success",
   "execution": "private GitHub workflow -> Hugging Face Inference API",
   "model": "Qwen/Qwen3-0.6B",
   "token_exposed": false,
   "cloudflare_customer_ai": false,
-  "public_hf_space": false
+  "public_hf_space": false,
+  "hp_runtime_source": "hp_runtime.py"
 }
