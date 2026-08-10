@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from runtime.config import Settings
-from runtime.model import ConversationLanguageEngine, _generate_remote
+from runtime.model import ConversationLanguageEngine, _generate_remote, _routed_model
 
 
 class FakeResponse:
@@ -33,8 +33,15 @@ def test_engine_requires_private_hf_token(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert engine.available() is False
 
 
+def test_default_provider_is_explicit(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("CUSTOMER_AI_HF_PROVIDER", raising=False)
+    assert _routed_model("Qwen/Qwen3-0.6B") == "Qwen/Qwen3-0.6B:featherless-ai"
+    assert _routed_model("Qwen/Qwen3-0.6B:featherless-ai") == "Qwen/Qwen3-0.6B:featherless-ai"
+
+
 def test_hf_api_request_stays_server_side(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("HF_TOKEN", "hf_test_secret_value")
+    monkeypatch.setenv("CUSTOMER_AI_HF_PROVIDER", "featherless-ai")
     captured: dict = {}
 
     def fake_post(url, *, headers, json, timeout, follow_redirects):
@@ -58,8 +65,9 @@ def test_hf_api_request_stays_server_side(monkeypatch: pytest.MonkeyPatch):
     assert answer == "テスト回答"
     assert captured["url"] == "https://router.huggingface.co/v1/chat/completions"
     assert captured["headers"]["authorization"] == "Bearer hf_test_secret_value"
-    assert captured["json"]["model"] == "Qwen/Qwen3-0.6B"
+    assert captured["json"]["model"] == "Qwen/Qwen3-0.6B:featherless-ai"
     assert captured["json"]["max_tokens"] == 32
+    assert "temperature" not in captured["json"]
     assert captured["follow_redirects"] is True
     assert "hf_test_secret_value" not in str(captured["json"])
 
