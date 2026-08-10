@@ -24,6 +24,15 @@ from .v8 import V8Supervisor
 
 LOGGER = logging.getLogger(__name__)
 SUPPORT_PIPELINE = "astera-customerai-master-v2-kb-only"
+RESPONSE_MODE_TOPICS = {
+    "general": "astera",
+    "operation": "operation",
+    "billing": "billing",
+    "technical": "technical",
+    "investor": "investor",
+    "support": "support",
+    "trouble": "troubleshooting",
+}
 
 
 class InternalEventApiClient:
@@ -170,6 +179,17 @@ class CustomerAIService:
         return {"recovered": recovered, "count": len(recovered)}
 
     async def accept(self, event: CloudEvent) -> tuple[dict[str, Any], bool]:
+        validate_identifier(event.id, field="event_id")
+        if event.type == "customer.ai.session.delete.requested":
+            session_id = validate_identifier(
+                str(event.data.get("session_id") or ""), field="session_id"
+            )
+            deleted = self.conversations.delete(session_id)
+            result = {"session_id": session_id, "deleted": deleted}
+            await self.events.emit(
+                "customer.ai.session.deleted", f"session/{session_id}", result
+            )
+            return result, True
         if event.type != "customer.ai.message.requested":
             raise ValueError("unsupported_event_type")
         payload = MessagePayload.model_validate(event.data["message"])
@@ -177,7 +197,6 @@ class CustomerAIService:
             raise ValueError("message_too_large")
         redacted = redact_text(payload.message)
         payload = payload.model_copy(update={"message": redacted.text})
-        validate_identifier(event.id, field="event_id")
         job_id = str(
             event.data.get("job_id")
             or "job_" + hashlib.sha256(event.id.encode()).hexdigest()[:32]
@@ -193,6 +212,9 @@ class CustomerAIService:
                 "job_id": job_id,
                 "created": created,
                 "redaction_kinds": redacted.kinds,
+                "response_mode": payload.response_mode,
+                "mode_source": payload.mode_source,
+                "current_path": payload.current_path,
             },
         )
         return record.model_dump(mode="json"), created
@@ -241,6 +263,21 @@ class CustomerAIService:
     async def _run_pipeline(
         self, job_id: str, request: MessagePayload
     ) -> dict[str, Any]:
+        context = self.conversations.get(request.session_id)
+        details = dict(context.confirmed_details)
+        details.update(
+            {
+                "response_mode": request.response_mode,
+                "mode_source": request.mode_source,
+                "current_path": request.current_path,
+            }
+        )
+        updates: dict[str, Any] = {"confirmed_details": details}
+        routed_topic = RESPONSE_MODE_TOPICS.get(request.response_mode)
+        if routed_topic:
+            updates["active_topic"] = routed_topic
+        self.conversations.save(context.model_copy(update=updates))
+
         outcome = await self.core.execute(request=request)
         return JobResult(
             job_id=job_id,
@@ -261,6 +298,12 @@ class CustomerAIService:
             "repair_attempted": outcome.repair_attempted,
             "feedback_candidate_id": outcome.feedback_candidate_id,
             "execution": outcome.execution,
+            "routing": {
+                "response_mode": request.response_mode,
+                "mode_source": request.mode_source,
+                "current_path": request.current_path,
+                "active_topic": routed_topic or context.active_topic,
+            },
         }
 
     def readiness(self) -> dict[str, Any]:
