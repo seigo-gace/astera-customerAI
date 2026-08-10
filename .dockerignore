@@ -1,0 +1,12 @@
+.git
+.github
+deployment-evidence
+test-results
+.pytest_cache
+.ruff_cache
+**/__pycache__
+*.py[cod]
+.env
+.env.*
+!.env.example
+node_modules
