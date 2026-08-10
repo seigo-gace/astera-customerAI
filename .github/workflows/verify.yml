@@ -2,7 +2,16 @@ name: verify
 
 on:
   push:
+    paths-ignore:
+      - 'deployment-evidence/**'
   pull_request:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   verify:
@@ -68,7 +77,9 @@ jobs:
         if: always()
         run: pytest -q --junitxml=test-results/full-regression.xml
       - name: Live HF API smoke from private GitHub workflow
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: hf_smoke
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        continue-on-error: true
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN || secrets.HF_KEY }}
           CUSTOMER_AI_HF_TIMEOUT_SECONDS: '30'
@@ -86,6 +97,41 @@ jobs:
               raise SystemExit('HF_API_SMOKE_EMPTY')
           print('HF_API_SMOKE_OK')
           PY
+      - name: Persist HF API smoke evidence
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          HF_SMOKE_OUTCOME: ${{ steps.hf_smoke.outcome }}
+        run: |
+          set -euo pipefail
+          mkdir -p deployment-evidence
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          payload = {
+              'source_sha': os.environ['GITHUB_SHA'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'hf_api_smoke': os.environ.get('HF_SMOKE_OUTCOME', 'unknown'),
+              'execution': 'private GitHub workflow -> Hugging Face Inference API',
+              'model': 'Qwen/Qwen3-0.6B',
+              'token_exposed': False,
+              'cloudflare_customer_ai': False,
+              'public_hf_space': False,
+          }
+          Path('deployment-evidence/hf-api-smoke.json').write_text(
+              json.dumps(payload, ensure_ascii=False, indent=2) + '\n',
+              encoding='utf-8',
+          )
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add deployment-evidence/hf-api-smoke.json
+          git commit -m 'chore: record HF API smoke evidence [skip ci]' || exit 0
+          git push origin HEAD:main
+      - name: Enforce HF API smoke result
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          HF_SMOKE_OUTCOME: ${{ steps.hf_smoke.outcome }}
+        run: test "$HF_SMOKE_OUTCOME" = 'success'
       - name: Upload verification results
         if: always()
         continue-on-error: true
