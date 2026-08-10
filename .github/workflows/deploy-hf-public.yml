@@ -93,7 +93,7 @@ jobs:
           pytest -q tests/test_public_hf_api.py
           grep -Fq 'runtime.bundle.enc' scripts/provision_hf_public.py
           grep -Fq 'sdk: docker' scripts/provision_hf_public.py
-          grep -Fq 'CUSTOMER_AI_DATA_ROOT\": \"/tmp/customer-ai\"' scripts/provision_hf_public.py
+          grep -Fq 'CUSTOMER_AI_DATA_ROOT": "/tmp/customer-ai"' scripts/provision_hf_public.py
           grep -Fq 'api.add_space_secret(SPACE_ID, key="HF_TOKEN", value=TOKEN)' scripts/provision_hf_public.py
           grep -Fq 'BUNDLED_NOTION_TOKEN' scripts/provision_hf_public.py
           ! grep -Eqi 'cloudflare|turnstile|api\.asterav8\.jp' public_app.py scripts/provision_hf_public.py
