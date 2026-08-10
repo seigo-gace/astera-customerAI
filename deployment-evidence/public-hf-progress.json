@@ -1,7 +1,8 @@
 {
   "stage": "preflight_complete",
-  "source_sha": "f69e488b6265448a90d6d204e83bb8222acfd991",
-  "run_id": "31411790450",
-  "architecture": "public HP -> HF public API boundary; encrypted runtime bundle deployed from private GitHub source",
-  "cloudflare_customer_ai": false
+  "source_sha": "56e738114e2e0db3abfbc6e706c2124bd0c44f8a",
+  "run_id": "31412236623",
+  "architecture": "public HP -> existing HF public API boundary; encrypted runtime bundle deployed from private GitHub source",
+  "cloudflare_customer_ai": false,
+  "space": "G-ACE/astera-customerAI"
 }
