@@ -10,6 +10,12 @@ from .notion import NotionClient
 BUNDLED_NOTION_TOKEN = "bundled:hp-public-v2"
 EXPECTED_SCHEMA = "customerai_master_v2_hp_public_bundle_v2"
 EXPECTED_SOURCE_HASH = "8c2de4259b00a4c64dc175bb76ed7187387db1c127e2f3de66fc21278490d8f5"
+PRICING_SOURCE_HASH = "2c85ff01e3c2654789bb57a630eefeed7e26abf2f817de7d949c7855d806822b"
+EXPECTED_SOURCE_HASHES_BY_NAME = {
+    "bundled-hp-public-v2.json": EXPECTED_SOURCE_HASH,
+    "bundled-hp-public-boundary-v2.json": EXPECTED_SOURCE_HASH,
+    "bundled-hp-pricing-current-v1.json": PRICING_SOURCE_HASH,
+}
 REQUIRED_FIELDS = (
     "Title",
     "Category",
@@ -21,6 +27,7 @@ REQUIRED_FIELDS = (
 DEFAULT_BUNDLE_NAMES = (
     "bundled-hp-public-v2.json",
     "bundled-hp-public-boundary-v2.json",
+    "bundled-hp-pricing-current-v1.json",
 )
 
 
@@ -29,8 +36,16 @@ def _bundle_paths() -> list[Path]:
     if configured:
         candidate = Path(configured)
         if candidate.exists():
-            sibling = candidate.with_name("bundled-hp-public-boundary-v2.json")
-            return [candidate, sibling] if sibling.exists() else [candidate]
+            root = candidate.parent
+            paths = [candidate]
+            for name in (
+                "bundled-hp-public-boundary-v2.json",
+                "bundled-hp-pricing-current-v1.json",
+            ):
+                sibling = root / name
+                if sibling.exists() and sibling not in paths:
+                    paths.append(sibling)
+            return paths
     root = Path(__file__).resolve().parents[1] / "kb"
     return [root / name for name in DEFAULT_BUNDLE_NAMES]
 
@@ -39,7 +54,8 @@ def _load_payload(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("schema_version") != EXPECTED_SCHEMA:
         raise RuntimeError("bundled_kb_schema_invalid")
-    if payload.get("source_sha256") != EXPECTED_SOURCE_HASH:
+    expected_hash = EXPECTED_SOURCE_HASHES_BY_NAME.get(path.name)
+    if not expected_hash or payload.get("source_sha256") != expected_hash:
         raise RuntimeError("bundled_kb_source_hash_invalid")
     raw_pages = payload.get("pages")
     if not isinstance(raw_pages, list) or not raw_pages:
