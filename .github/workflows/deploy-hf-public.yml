@@ -1,0 +1,45 @@
+name: deploy-public-hf-customer-ai
+
+on:
+  push:
+    branches: [main]
+    paths: ['.deploy/customer-ai-public']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-public-hf-customer-ai
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN || secrets.HF_KEY }}
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      HF_PUBLIC_SPACE_ID: G-ACE/astera-customerAI-public
+      HF_BUCKET_ID: G-ACE/astera-customerai-data
+      CUSTOMER_AI_MODEL_ID: Qwen/Qwen3-0.6B
+      CUSTOMER_AI_MODEL_REVISION: c1899de289a04d12100db370d81485cdf75e47ca
+      CUSTOMER_AI_ENABLE_MODEL: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: main}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13', cache: pip}
+      - uses: actions/setup-node@v4
+        with: {node-version: '22.16.0'}
+      - name: Verify source before public deployment
+        run: |
+          python -m pip install --upgrade pip --quiet
+          pip install -r requirements-dev.txt --quiet
+          pip install --upgrade 'huggingface_hub>=1.24.0' 'cryptography>=45,<47' 'httpx>=0.28,<1' --quiet
+          python scripts/review.py --all
+          ruff check . --select E9,F63,F7,F82
+          pytest -q
+          npm test
+      - name: Deploy encrypted runtime bundle to public Hugging Face Space
+        run: python scripts/provision_hf_public.py

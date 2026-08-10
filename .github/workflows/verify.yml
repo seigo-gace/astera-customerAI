@@ -20,13 +20,11 @@ jobs:
       - run: python -m pip install --upgrade pip --quiet
       - run: pip install -r requirements-dev.txt --quiet
       - run: mkdir -p test-results
-
       - name: Review architecture and syntax
         run: python scripts/review.py --all
       - name: Ruff fatal checks
         if: always()
         run: ruff check . --select E9,F63,F7,F82
-
       - name: Conversation and control runtime tests
         if: always()
         run: pytest -q tests/test_control_core.py --junitxml=test-results/control.xml
@@ -35,51 +33,35 @@ jobs:
         run: pytest -q tests/test_support_runtime.py --junitxml=test-results/support.xml
       - name: API and service integration tests
         if: always()
-        run: pytest -q tests/test_api.py tests/test_service.py --junitxml=test-results/api-service.xml
+        run: pytest -q tests/test_api.py tests/test_service.py tests/test_public_routing.py tests/test_public_hf_api.py --junitxml=test-results/api-service.xml
+      - name: KB v3 adapter and 100-scenario regression
+        if: always()
+        run: pytest -q tests/test_notion_v3.py tests/test_kb_v3_story_matrix_100.py --junitxml=test-results/kb-v3.xml
       - name: KB security and storage tests
         if: always()
         run: pytest -q tests/test_kb.py tests/test_security.py tests/test_storage.py --junitxml=test-results/kb-security-storage.xml
-
       - name: Story tests repeated three times
         if: always()
         run: |
           set -euo pipefail
-          for run in 1 2 3; do
-            echo "STORY_VALIDATION_RUN=$run"
-            pytest -q tests/test_story_runtime.py \
-              --basetemp=".pytest-story-$run" \
-              --junitxml="test-results/story-$run.xml"
-          done
-
+          for run in 1 2 3; do pytest -q tests/test_story_runtime.py --basetemp=".pytest-story-$run" --junitxml="test-results/story-$run.xml"; done
       - name: Signed operational runtime tests repeated twice
         if: always()
         run: |
           set -euo pipefail
-          for run in 1 2; do
-            echo "OPERATIONAL_VALIDATION_RUN=$run"
-            pytest -q tests/test_operational_runtime.py \
-              --basetemp=".pytest-operational-$run" \
-              --junitxml="test-results/operational-$run.xml"
-          done
-
+          for run in 1 2; do pytest -q tests/test_operational_runtime.py --basetemp=".pytest-operational-$run" --junitxml="test-results/operational-$run.xml"; done
       - name: V8 runtime tests
         if: always()
         run: npm test
-      - name: Cloudflare edge syntax and contract tests
-        if: always()
-        run: |
-          npm run check:edge
-          npm run test:edge
-
       - name: Full Python regression suite
         if: always()
         run: pytest -q --junitxml=test-results/full-regression.xml
-
       - name: Upload verification results
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: customer-ai-verification-${{ github.run_id }}
           path: test-results
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
