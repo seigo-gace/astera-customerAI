@@ -23,9 +23,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      HF_TOKEN: ${{ secrets.HF_TOKEN || secrets.HF_KEY }}
+      HF_TOKEN_PRIMARY: ${{ secrets.HF_TOKEN }}
+      HF_TOKEN_FALLBACK: ${{ secrets.HF_KEY }}
       NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-      HF_PUBLIC_SPACE_ID: G-ACE/astera-customerAI
+      HF_PUBLIC_SPACE_ID: G-ACE/astera-customerAI-public
       CUSTOMER_AI_MODEL_ID: Qwen/Qwen3-0.6B
       CUSTOMER_AI_MODEL_REVISION: c1899de289a04d12100db370d81485cdf75e47ca
       CUSTOMER_AI_ENABLE_MODEL: '1'
@@ -34,20 +35,65 @@ jobs:
         with: {ref: main}
       - uses: actions/setup-python@v5
         with: {python-version: '3.13'}
+      - name: Resolve authenticated G-ACE Hugging Face token
+        id: hf-auth
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip --quiet
+          pip install 'huggingface_hub>=1.24.0' --quiet
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+
+          candidates = [
+              ('HF_TOKEN', os.environ.get('HF_TOKEN_PRIMARY', '').strip()),
+              ('HF_KEY', os.environ.get('HF_TOKEN_FALLBACK', '').strip()),
+          ]
+          selected = None
+          diagnostics = []
+          for label, token in candidates:
+              if not token:
+                  diagnostics.append(f'{label}:missing')
+                  continue
+              try:
+                  info = HfApi(token=token).whoami()
+              except Exception as error:
+                  diagnostics.append(f'{label}:auth_error:{type(error).__name__}')
+                  continue
+              name = str(info.get('name') or '')
+              is_pro = info.get('isPro')
+              auth = info.get('auth') if isinstance(info.get('auth'), dict) else {}
+              access = auth.get('accessToken') if isinstance(auth.get('accessToken'), dict) else {}
+              role = str(access.get('role') or '')
+              diagnostics.append(f'{label}:name={name}:isPro={is_pro}:role={role or "unknown"}')
+              if name == 'G-ACE':
+                  selected = (label, token, is_pro, role)
+                  if role.lower() == 'write':
+                      break
+          for line in diagnostics:
+              print('HF_AUTH_DIAGNOSTIC=' + line)
+          if selected is None:
+              raise SystemExit('NO_G_ACE_HF_TOKEN_AVAILABLE')
+          label, token, is_pro, role = selected
+          print('::add-mask::' + token)
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as handle:
+              handle.write('HF_TOKEN=' + token + '\n')
+          print(f'HF_AUTH_SELECTED={label}:isPro={is_pro}:role={role or "unknown"}')
+          PY
       - name: Verify deploy source and public contract
         id: preflight
         shell: bash
         run: |
           set -euo pipefail
           test -n "$HF_TOKEN" || { echo 'HF_TOKEN missing' >&2; exit 11; }
-          python -m pip install --upgrade pip --quiet
           pip install -r requirements-dev.txt --quiet
-          pip install 'huggingface_hub>=1.24.0' 'cryptography>=45,<47' 'httpx>=0.28,<1' --quiet
+          pip install 'cryptography>=45,<47' 'httpx>=0.28,<1' --quiet
           python -m py_compile public_app.py scripts/provision_hf_public.py
           pytest -q tests/test_public_hf_api.py
           grep -Fq 'runtime.bundle.enc' scripts/provision_hf_public.py
           grep -Fq 'sdk: docker' scripts/provision_hf_public.py
-          grep -Fq 'CUSTOMER_AI_DATA_ROOT": "/tmp/customer-ai"' scripts/provision_hf_public.py
+          grep -Fq 'CUSTOMER_AI_DATA_ROOT\": \"/tmp/customer-ai\"' scripts/provision_hf_public.py
           grep -Fq 'api.add_space_secret(SPACE_ID, key="HF_TOKEN", value=TOKEN)' scripts/provision_hf_public.py
           grep -Fq 'BUNDLED_NOTION_TOKEN' scripts/provision_hf_public.py
           ! grep -Eqi 'cloudflare|turnstile|api\.asterav8\.jp' public_app.py scripts/provision_hf_public.py
@@ -62,6 +108,7 @@ jobs:
         shell: bash
         env:
           JOB_STATUS: ${{ job.status }}
+          AUTH_OUTCOME: ${{ steps.hf-auth.outcome }}
           PREFLIGHT_OUTCOME: ${{ steps.preflight.outcome }}
           LIVE_OUTCOME: ${{ steps.live.outcome }}
         run: |
@@ -75,11 +122,12 @@ jobs:
           match = re.search(r'HF_PUBLIC_CUSTOMER_AI_URL=(https://\S+)', log)
           payload = {
               'status': os.environ.get('JOB_STATUS', 'unknown'),
+              'hf_auth': os.environ.get('AUTH_OUTCOME', 'unknown'),
               'preflight': os.environ.get('PREFLIGHT_OUTCOME', 'unknown'),
               'live_e2e': os.environ.get('LIVE_OUTCOME', 'unknown'),
               'e2e_marker': 'HF_PUBLIC_CUSTOMER_AI_E2E_OK' in log,
               'architecture': 'GitHub Pages HP -> HF public thin boundary -> encrypted private Customer AI runtime -> HF Inference API',
-              'public_space': 'G-ACE/astera-customerAI',
+              'public_space': 'G-ACE/astera-customerAI-public',
               'public_url': match.group(1) if match else '',
               'private_source_repo': 'seigo-gace/astera-customerAI',
               'source_sha': os.environ['GITHUB_SHA'],
