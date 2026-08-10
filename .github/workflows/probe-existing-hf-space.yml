@@ -1,0 +1,81 @@
+name: probe-existing-hf-space
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-existing-hf-space.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      HF_TOKEN_PRIMARY: ${{ secrets.HF_TOKEN }}
+      HF_TOKEN_FALLBACK: ${{ secrets.HF_KEY }}
+      TARGET_SPACE: G-ACE/astera-customerAI
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: main, fetch-depth: 1}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - name: Verify current runtime and live response
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip --quiet
+          pip install 'huggingface_hub>=1.24.0' 'httpx>=0.28,<1' --quiet
+          python - <<'PY'
+          import json, os, time
+          from pathlib import Path
+          import httpx
+          from huggingface_hub import HfApi
+          selected=None
+          for label,token in [('HF_TOKEN',os.environ.get('HF_TOKEN_PRIMARY','').strip()),('HF_KEY',os.environ.get('HF_TOKEN_FALLBACK','').strip())]:
+              if not token: continue
+              try: who=HfApi(token=token).whoami()
+              except Exception: continue
+              if str(who.get('name') or '')=='G-ACE': selected=(label,token,bool(who.get('isPro'))); break
+          if not selected: raise SystemExit('NO_G_ACE_HF_TOKEN_AVAILABLE')
+          label,token,is_pro=selected; print('::add-mask::'+token)
+          api=HfApi(token=token); target=os.environ['TARGET_SPACE']
+          info=api.space_info(target,expand=['subdomain','sha','private','runtime'])
+          variables=set(api.get_space_variables(target).keys()); secrets=set(api.get_space_secrets(target).keys())
+          collisions=sorted(variables & secrets); runtime=info.runtime; raw=getattr(runtime,'raw',{}) or {}
+          stage=str(getattr(runtime,'stage','') or ''); subdomain=str(info.subdomain or ''); url=f'https://{subdomain}.hf.space' if subdomain else ''
+          def get(path, headers=None):
+              try:
+                  r=httpx.get(url+path,headers=headers or {},timeout=25,follow_redirects=True); return r.status_code,r.text[:1500]
+              except Exception as e: return 0,f'{type(e).__name__}:{e}'
+          public_health,health_body=get('/healthz')
+          public_ready,ready_body=get('/readyz')
+          auth_ready,auth_ready_body=get('/readyz',{'authorization':f'Bearer {token}'})
+          suffix=str(int(time.time())); payload={'session_id':f'session_probe_{suffix}','message_id':f'message_probe_{suffix}','message':'料金を教えて','locale':'ja-JP','source':'astera-hp','response_mode':'billing','mode_source':'selected','current_path':'/ja/'}
+          respond_status=0; respond_body=''; has_answer=False
+          if public_ready==200:
+              try:
+                  r=httpx.post(url+'/respond',json=payload,headers={'origin':'https://asterav8.jp','content-type':'application/json'},timeout=90,follow_redirects=True); respond_status=r.status_code; respond_body=r.text[:3000]
+                  if r.status_code==200:
+                      body=r.json(); has_answer=bool(str(body.get('answer') or body.get('clarification') or '').strip())
+                      if has_answer:
+                          httpx.delete(url+'/sessions/'+payload['session_id'],headers={'origin':'https://asterav8.jp'},timeout=20,follow_redirects=True)
+              except Exception as e: respond_body=f'{type(e).__name__}:{e}'
+          result={'target_space':target,'authenticated_account':'G-ACE','is_pro':is_pro,'runtime_stage':stage,'runtime_error':str(raw.get('errorMessage') or ''),'space_private':bool(info.private),'space_sha':str(info.sha or ''),'space_url':url,'config_collisions':collisions,'public_healthz_status':public_health,'public_readyz_status':public_ready,'authenticated_readyz_status':auth_ready,'public_respond_status':respond_status,'respond_has_answer':has_answer,'ready_detail':ready_body[:800] if public_ready!=200 else 'ready','respond_detail':respond_body[:1200] if respond_status!=200 else 'ok','run_id':os.environ.get('GITHUB_RUN_ID',''),'source_sha':os.environ.get('GITHUB_SHA','')}
+          Path('deployment-evidence').mkdir(exist_ok=True)
+          Path('deployment-evidence/hf-space-probe-latest.json').write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+          print('HF_SPACE_PROBE='+json.dumps(result,ensure_ascii=False))
+          PY
+      - name: Persist probe and remove one-time workflow
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          if [ -f deployment-evidence/hf-space-probe-latest.json ]; then git add deployment-evidence/hf-space-probe-latest.json; fi
+          git rm .github/workflows/probe-existing-hf-space.yml
+          git commit -m 'test: record Customer AI live probe after KB fix'
+          git push origin HEAD:main
