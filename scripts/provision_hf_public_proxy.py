@@ -6,6 +6,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
+from typing import Callable
 
 import httpx
 from huggingface_hub import HfApi
@@ -26,6 +27,33 @@ def shared_hmac_secret() -> str:
     return "base64:" + base64.b64encode(digest).decode("ascii")
 
 
+def wait_json(
+    url: str,
+    predicate: Callable[[dict], bool],
+    *,
+    headers: dict[str, str] | None = None,
+    attempts: int = 36,
+    interval: int = 5,
+    label: str,
+) -> dict:
+    last = ""
+    for attempt in range(attempts):
+        try:
+            response = httpx.get(url, headers=headers, timeout=20, follow_redirects=True)
+            last = f"{response.status_code}:{response.text[:300]}"
+            if response.status_code == 200:
+                body = response.json()
+                if predicate(body):
+                    print(f"{label}_OK")
+                    return body
+        except Exception as error:
+            last = repr(error)
+        if attempt == attempts - 1:
+            raise RuntimeError(f"{label}_TIMEOUT:{last}")
+        time.sleep(interval)
+    raise RuntimeError(f"{label}_UNREACHABLE")
+
+
 def main() -> None:
     if not TOKEN:
         raise SystemExit("HF_TOKEN_MISSING")
@@ -44,6 +72,12 @@ def main() -> None:
     # Keep both server-side components on one secret without exposing it to the browser.
     api.add_space_secret(PRIVATE_SPACE_ID, key="CUSTOMER_AI_HMAC_SECRET", value=hmac_secret)
     api.restart_space(PRIVATE_SPACE_ID)
+    wait_json(
+        private_url + "/healthz",
+        lambda body: body.get("status") == "ok",
+        headers={"authorization": f"Bearer {TOKEN}"},
+        label="HF_PRIVATE_RUNTIME_HEALTH",
+    )
 
     api.create_repo(repo_id=PUBLIC_SPACE_ID, repo_type="space", private=False, exist_ok=True, space_sdk="gradio")
     api.update_repo_settings(repo_id=PUBLIC_SPACE_ID, repo_type="space", private=False)
@@ -73,21 +107,11 @@ def main() -> None:
     public_url = f"https://{info.subdomain}.hf.space"
     print(f"HF_PUBLIC_CUSTOMER_AI_FACADE_URL={public_url}")
 
-    last = ""
-    for attempt in range(45):
-        try:
-            response = httpx.get(public_url + "/healthz", timeout=20, follow_redirects=True)
-            last = f"{response.status_code}:{response.text[:300]}"
-            if response.status_code == 200:
-                body = response.json()
-                if body.get("status") == "ok" and body.get("runtime_configured") is True:
-                    print("HF_PUBLIC_FACADE_HEALTH_OK")
-                    break
-        except Exception as error:
-            last = repr(error)
-        if attempt == 44:
-            raise RuntimeError(f"HF_PUBLIC_FACADE_HEALTH_TIMEOUT:{last}")
-        time.sleep(15)
+    wait_json(
+        public_url + "/healthz",
+        lambda body: body.get("status") == "ok" and body.get("runtime_configured") is True,
+        label="HF_PUBLIC_FACADE_HEALTH",
+    )
 
     suffix = str(int(time.time()))
     payload = {
@@ -100,14 +124,21 @@ def main() -> None:
         "mode_source": "selected",
         "current_path": "/ja/",
     }
-    response = httpx.post(public_url + "/public/customer-ai/respond", json=payload, timeout=60, follow_redirects=True)
-    print(f"HF_PUBLIC_FACADE_E2E_STATUS={response.status_code}")
-    if response.status_code != 200:
-        raise RuntimeError(f"HF_PUBLIC_FACADE_E2E_FAILED:{response.status_code}:{response.text[:500]}")
-    body = response.json()
-    if not str(body.get("answer") or body.get("clarification") or "").strip():
-        raise RuntimeError(f"HF_PUBLIC_FACADE_EMPTY_ANSWER:{body}")
-    print("HF_PUBLIC_FACADE_E2E_OK")
+    last = ""
+    for attempt in range(6):
+        try:
+            response = httpx.post(public_url + "/public/customer-ai/respond", json=payload, timeout=60, follow_redirects=True)
+            last = f"{response.status_code}:{response.text[:500]}"
+            if response.status_code == 200:
+                body = response.json()
+                if str(body.get("answer") or body.get("clarification") or "").strip():
+                    print("HF_PUBLIC_FACADE_E2E_OK")
+                    return
+        except Exception as error:
+            last = repr(error)
+        if attempt < 5:
+            time.sleep(10)
+    raise RuntimeError(f"HF_PUBLIC_FACADE_E2E_FAILED:{last}")
 
 
 if __name__ == "__main__":
