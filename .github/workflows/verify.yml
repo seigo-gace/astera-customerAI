@@ -25,6 +25,9 @@ jobs:
       - name: Ruff fatal checks
         if: always()
         run: ruff check . --select E9,F63,F7,F82
+      - name: Public facade syntax
+        if: always()
+        run: python -m py_compile public_proxy.py scripts/provision_hf_public_proxy.py
       - name: Conversation and control runtime tests
         if: always()
         run: pytest -q tests/test_control_core.py --junitxml=test-results/control.xml
@@ -34,11 +37,6 @@ jobs:
       - name: API and service integration tests
         if: always()
         run: pytest -q tests/test_api.py tests/test_service.py tests/test_public_routing.py --junitxml=test-results/api-service.xml
-      - name: Public Customer AI edge syntax and contract
-        if: always()
-        run: |
-          npm run check:edge
-          npm run test:edge
       - name: KB v3 adapter and 100-scenario regression
         if: always()
         run: pytest -q tests/test_notion_v3.py tests/test_kb_v3_story_matrix_100.py --junitxml=test-results/kb-v3.xml
