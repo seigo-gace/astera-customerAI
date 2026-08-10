@@ -101,13 +101,14 @@ async def healthz() -> dict[str, str]:
 @app.get("/readyz")
 async def readyz() -> dict:
     checks = service.readiness()
+    hf_api_available = bool(service.engine.available())
     ready = bool(
         checks.get("data_root")
         and checks.get("v8")
         and checks.get("kb")
         and (
             not checks.get("model_enabled")
-            or service.model.available()
+            or hf_api_available
         )
     )
     if not ready:
@@ -122,7 +123,7 @@ async def readyz() -> dict:
             "v8": True,
             "kb": True,
             "model_enabled": bool(checks.get("model_enabled")),
-            "hf_api_available": bool(service.model.available()),
+            "hf_api_available": hf_api_available,
         },
     }
 
