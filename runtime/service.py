@@ -33,6 +33,25 @@ RESPONSE_MODE_TOPICS = {
     "support": "support",
     "trouble": "troubleshooting",
 }
+PATH_TOPICS = (
+    (("/pricing", "/account", "/billing"), "billing"),
+    (("/developer", "/technical", "/api", "/evidence"), "technical"),
+    (("/investor", "/corporate"), "investor"),
+    (("/support", "/sponsor"), "support"),
+    (("/app", "/product/usage"), "operation"),
+    (("/qa", "/contact"), "support"),
+)
+
+
+def route_topic(request: MessagePayload, previous: str = "") -> str:
+    selected = RESPONSE_MODE_TOPICS.get(request.response_mode)
+    if selected:
+        return selected
+    path = request.current_path.lower()
+    for prefixes, topic in PATH_TOPICS:
+        if any(path.startswith(prefix) for prefix in prefixes):
+            return topic
+    return previous or "general"
 
 
 class InternalEventApiClient:
@@ -264,19 +283,21 @@ class CustomerAIService:
         self, job_id: str, request: MessagePayload
     ) -> dict[str, Any]:
         context = self.conversations.get(request.session_id)
+        routed_topic = route_topic(request, context.active_topic)
         details = dict(context.confirmed_details)
         details.update(
             {
                 "response_mode": request.response_mode,
                 "mode_source": request.mode_source,
                 "current_path": request.current_path,
+                "routed_topic": routed_topic,
             }
         )
-        updates: dict[str, Any] = {"confirmed_details": details}
-        routed_topic = RESPONSE_MODE_TOPICS.get(request.response_mode)
-        if routed_topic:
-            updates["active_topic"] = routed_topic
-        self.conversations.save(context.model_copy(update=updates))
+        self.conversations.save(
+            context.model_copy(
+                update={"confirmed_details": details, "active_topic": routed_topic}
+            )
+        )
 
         outcome = await self.core.execute(request=request)
         return JobResult(
@@ -302,7 +323,7 @@ class CustomerAIService:
                 "response_mode": request.response_mode,
                 "mode_source": request.mode_source,
                 "current_path": request.current_path,
-                "active_topic": routed_topic or context.active_topic,
+                "active_topic": routed_topic,
             },
         }
 
