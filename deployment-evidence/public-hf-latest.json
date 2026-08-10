@@ -2,10 +2,10 @@
   "status": "failure",
   "preflight": "success",
   "live_e2e": "failure",
-  "architecture": "public HP -> HF public API boundary; encrypted runtime bundle deployed from private GitHub source",
+  "architecture": "public HP -> existing HF public API boundary; encrypted runtime bundle deployed from private GitHub source",
   "cloudflare_customer_ai": false,
-  "public_space": "G-ACE/astera-customerAI-public",
+  "public_space": "G-ACE/astera-customerAI",
   "private_source_repo": "seigo-gace/astera-customerAI",
-  "source_sha": "f69e488b6265448a90d6d204e83bb8222acfd991",
-  "run_id": "31411790450"
+  "source_sha": "56e738114e2e0db3abfbc6e706c2124bd0c44f8a",
+  "run_id": "31412236623"
 }
