@@ -1,0 +1,5 @@
+deploy=hf-public-encrypted-bundle
+architecture=hp-to-hf-public-api-encrypted-private-github-runtime
+private_source_repo=seigo-gace/astera-customerAI
+cloudflare_customer_ai=false
+trigger=2026-08-11T01:00:00+09:00
