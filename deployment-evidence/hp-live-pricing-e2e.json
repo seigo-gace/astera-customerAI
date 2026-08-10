@@ -1,0 +1,18 @@
+{
+  "hp": "https://asterav8.jp",
+  "endpoint": "https://g-ace-astera-customerai.hf.space",
+  "question": "料金を教えて",
+  "page_status": 200,
+  "client_status": 200,
+  "client_has_existing_endpoint": true,
+  "respond_status": 200,
+  "respond_has_answer": true,
+  "answer_has_basic_980": true,
+  "answer_has_pro_2980": true,
+  "answer_has_business_9980": true,
+  "answer_has_enterprise_29800": true,
+  "generic_fallback": false,
+  "answer": "公開予定の月額Planはすべて税込で、Free 0円（初回20,000 Credit／以後毎月10,000 Credit）、Basic 980円（毎月180,000 Credit）、Pro 2,980円（毎月640,000 Credit）、Business 9,980円（毎月2,200,000 Credit）、Enterprise 29,800円（毎月6,600,000 Credit）です。Astera Appはクラウドファンディング終了まで一般公開せず、現時点では契約・登録・Checkoutは行いません。",
+  "run_id": "31432774659",
+  "source_sha": "8af4d2b7cb62a1b33b3d4c0fde461982e9a6f829"
+}
