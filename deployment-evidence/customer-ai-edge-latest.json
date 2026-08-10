@@ -1,0 +1,14 @@
+{
+  "source_sha": "bde1955f9d1065e4f807724c8b14c2697771e578",
+  "workflow_run_id": "31402159419",
+  "workflow_run_attempt": "1",
+  "recorded_at": "2026-08-10T15:10:46.970974+00:00",
+  "verify": "failure",
+  "credentials": "skipped",
+  "deploy": "skipped",
+  "production_probe": "skipped",
+  "authenticated_answer_smoke": "skipped",
+  "job_status": "failure",
+  "api_base": "https://api.asterav8.jp/v1/customer-ai",
+  "normal_path": "synchronous_respond_no_job_polling"
+}
