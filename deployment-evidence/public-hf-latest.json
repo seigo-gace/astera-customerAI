@@ -1,12 +1,13 @@
 {
   "status": "failure",
-  "preflight": "success",
-  "live_e2e": "failure",
+  "hf_auth": "success",
+  "preflight": "failure",
+  "live_e2e": "skipped",
   "e2e_marker": false,
   "architecture": "GitHub Pages HP -> HF public thin boundary -> encrypted private Customer AI runtime -> HF Inference API",
   "public_space": "G-ACE/astera-customerAI-public",
   "public_url": "",
   "private_source_repo": "seigo-gace/astera-customerAI",
-  "source_sha": "6645f38ad74ecc0c29dd9b40a65bdc13bb04b772",
-  "run_id": "31426878116"
+  "source_sha": "bbc3dd46aa50d084838131286300c15bcef994b9",
+  "run_id": "31429092780"
 }
