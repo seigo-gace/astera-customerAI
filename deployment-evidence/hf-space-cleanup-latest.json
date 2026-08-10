@@ -1,0 +1,11 @@
+{
+  "status": "deleted",
+  "target_space": "G-ACE/astera-customerAI-public",
+  "preserved_space": "G-ACE/astera-customerAI",
+  "authenticated_account": "G-ACE",
+  "is_pro": true,
+  "token_source": "HF_KEY",
+  "verified_absent_after": true,
+  "run_id": "31430766665",
+  "source_sha": "a397753a30b3b0b5521c8f4f848ebd1d2fafd5ba"
+}
