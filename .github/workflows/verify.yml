@@ -33,7 +33,12 @@ jobs:
         run: pytest -q tests/test_support_runtime.py --junitxml=test-results/support.xml
       - name: API and service integration tests
         if: always()
-        run: pytest -q tests/test_api.py tests/test_service.py tests/test_public_routing.py tests/test_public_hf_api.py --junitxml=test-results/api-service.xml
+        run: pytest -q tests/test_api.py tests/test_service.py tests/test_public_routing.py --junitxml=test-results/api-service.xml
+      - name: Public Customer AI edge syntax and contract
+        if: always()
+        run: |
+          npm run check:edge
+          npm run test:edge
       - name: KB v3 adapter and 100-scenario regression
         if: always()
         run: pytest -q tests/test_notion_v3.py tests/test_kb_v3_story_matrix_100.py --junitxml=test-results/kb-v3.xml
