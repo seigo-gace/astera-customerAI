@@ -4,3 +4,4 @@ pydantic==2.12.5
 uvicorn==0.48.0
 httpx>=0.28,<1
 huggingface_hub==1.16.1
+rapidfuzz==3.14.3
