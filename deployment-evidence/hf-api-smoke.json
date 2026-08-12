@@ -1,6 +1,6 @@
 {
-  "source_sha": "5a1261cd42e8f592adc2feabba85f09b20c583a3",
-  "run_id": "31569724115",
+  "source_sha": "860a9ac3a4f93e804d9dc75f7456554916672b57",
+  "run_id": "31570014688",
   "hf_api_smoke": "success",
   "execution": "private GitHub workflow -> Hugging Face Inference API",
   "model": "Qwen/Qwen3-0.6B",
