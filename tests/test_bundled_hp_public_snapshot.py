@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from runtime.bundled_snapshot import (
@@ -14,9 +15,9 @@ def test_bundled_hp_public_snapshot_is_exact_and_public() -> None:
     pages, metadata = load_bundled_pages()
     assert metadata["source_sha256"] == EXPECTED_SOURCE_HASH
     assert metadata["schema_version"] == "customerai_master_v2_hp_public_bundle_v2"
-    assert metadata["page_count"] == 23
-    assert len(pages) == 23
-    assert len({page["Title"] for page in pages}) == 23
+    assert metadata["page_count"] == 24
+    assert len(pages) == 24
+    assert len({page["Title"] for page in pages}) == 24
     assert all(page["Status"] == "公開" for page in pages)
     assert all(
         page[field]
@@ -54,8 +55,9 @@ def test_bundled_hp_public_snapshot_contains_latest_hp_contract() -> None:
         "Customer AI専用には改造していません",
     ):
         assert required in serialized
-    for forbidden in ("月額2,000円", "9,800円", "Stripe", "旧KAGURA"):
+    for forbidden in ("月額2,000円", "Stripe", "旧KAGURA"):
         assert forbidden not in serialized
+    assert re.search(r"(?<![\d,])9,800円", serialized) is None
 
 
 def test_bundled_hp_public_snapshot_builds_and_retrieves(tmp_path: Path) -> None:
