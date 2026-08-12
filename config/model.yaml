@@ -1,0 +1,8 @@
+model:
+  base_model_id: null
+  base_revision: null
+  backend_mode: benchmark_required
+  role_adapter_mode: benchmark_required
+  require_trained_domain_model: true
+  allow_untrained_production_model: false
+  zero_gpu: false

@@ -1,0 +1,17 @@
+quality:
+  user_need_resolution_min: 0.98
+  answer_satisfaction_min: 0.98
+  satisfaction_confidence_lower_bound_min: 0.98
+  evaluation_min_unseen_scenarios: 200
+  evaluation_min_scenario_classes: 11
+  evaluation_min_each_class: 10
+  evaluation_min_critical: 30
+  evaluation_min_multiturn: 20
+  evaluation_min_false_premise: 20
+  production_model_self_judge_allowed: false
+  critical_resolution_min: 0.99
+  false_premise_correction_min: 1.0
+  unsupported_hallucination_max: 0
+  legacy_mixing_max: 0
+  secret_leak_max: 0
+  unexecuted_completion_claim_max: 0

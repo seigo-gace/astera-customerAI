@@ -1,11 +1,8 @@
-from .notion_v3 import install_v3_notion_adapter
+"""Astera Customer AI runtime.
 
-install_v3_notion_adapter()
+The runtime intentionally has no import-time network/bootstrap side effects.
+"""
 
-from .bundled_snapshot import install_bundled_notion_fallback
+from .schemas import FinalResponse, ResolutionMode, RoleName
 
-install_bundled_notion_fallback()
-
-from .service import CustomerAIService
-
-__all__ = ["CustomerAIService"]
+__all__ = ["FinalResponse", "ResolutionMode", "RoleName"]

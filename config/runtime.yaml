@@ -1,0 +1,18 @@
+runtime:
+  zero_gpu: false
+  resident_roles:
+    - constructive
+    - adversarial
+    - evidence_bound
+  role_concurrency: 3
+  max_targeted_retry: benchmark_required
+  max_dialogue_rounds: benchmark_required
+  request_timeout_ms: benchmark_required
+  max_in_flight: benchmark_required
+  queue_limit: benchmark_required
+  queue_timeout_ms: benchmark_required
+  raw_context_to_roles: false
+  shared_grounding: true
+  majority_vote: false
+  japanese_short_qa_skills: true
+  japanese_fuzzy_threshold: benchmark_required

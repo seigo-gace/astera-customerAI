@@ -26,53 +26,29 @@ class ComposedAnswer:
 
 
 class FinalAnswerComposer:
-    """Compose only validated task resolutions; never invent new domain facts."""
-
     def compose(self, plan: IntegratedAnswerPlan) -> ComposedAnswer:
-        all_task_ids = tuple(need.task_id for need in plan.needs)
+        all_task_ids = tuple(n.task_id for n in plan.needs)
         if plan.runtime_failure:
             return ComposedAnswer(ResolutionMode.RUNTIME_FAILURE, None, (), all_task_ids)
         if plan.safety_blocked:
             return ComposedAnswer(ResolutionMode.SAFETY_BLOCKED, None, (), all_task_ids)
-
-        by_task = {resolution.task_id: resolution for resolution in plan.resolutions}
+        by_task = {r.task_id: r for r in plan.resolutions}
         blocked = set(plan.blocked_task_ids) | set(plan.missing_evidence_task_ids)
         resolved: list[TaskResolution] = []
         unresolved: list[str] = []
-
         for need in plan.needs:
             item = by_task.get(need.task_id)
             if need.task_id in blocked or item is None or not item.resolved:
                 unresolved.append(need.task_id)
             else:
                 resolved.append(item)
-
-        useful = "\n\n".join(item.public_text.strip() for item in resolved) or None
-        resolved_ids = tuple(item.task_id for item in resolved)
-        unresolved_ids = tuple(unresolved)
-
+        useful = "\n\n".join(r.public_text.strip() for r in resolved) or None
         if plan.missing_user_inputs:
             question = f"{plan.missing_user_inputs[0]}を確認してください。"
-            return ComposedAnswer(
-                ResolutionMode.NEEDS_USER_INPUT,
-                useful,
-                resolved_ids,
-                unresolved_ids,
-                (question,),
-            )
+            return ComposedAnswer(ResolutionMode.NEEDS_USER_INPUT, useful, tuple(r.task_id for r in resolved), tuple(unresolved), (question,))
         if unresolved:
-            return ComposedAnswer(
-                ResolutionMode.SAFE_PARTIAL,
-                useful,
-                resolved_ids,
-                unresolved_ids,
-            )
-        return ComposedAnswer(
-            ResolutionMode.RESOLVED,
-            useful,
-            resolved_ids,
-            (),
-        )
+            return ComposedAnswer(ResolutionMode.SAFE_PARTIAL, useful, tuple(r.task_id for r in resolved), tuple(unresolved))
+        return ComposedAnswer(ResolutionMode.RESOLVED, useful, tuple(r.task_id for r in resolved), ())
 
 
 @dataclass(frozen=True)
@@ -89,32 +65,16 @@ class RuntimeSatisfactionSignals:
 
 
 class RuntimeSatisfactionGate:
-    """Structural gate only; natural-language satisfaction belongs to offline evaluation."""
-
-    def evaluate(
-        self,
-        mode: ResolutionMode,
-        signals: RuntimeSatisfactionSignals,
-    ) -> tuple[bool, list[str]]:
+    def evaluate(self, mode: ResolutionMode, signals: RuntimeSatisfactionSignals) -> tuple[bool, list[str]]:
         failures: list[str] = []
-        if mode != ResolutionMode.RESOLVED:
-            failures.append("conversation_not_resolved")
-        if not signals.all_major_needs_covered:
-            failures.append("major_need_missing")
-        if not signals.evidence_complete:
-            failures.append("evidence_incomplete")
-        if not signals.context_consistent:
-            failures.append("context_inconsistent")
-        if not signals.required_actionability_present:
-            failures.append("required_actionability_missing")
-        if not signals.false_premise_corrected:
-            failures.append("false_premise_uncorrected")
-        if signals.unnecessary_clarification_count:
-            failures.append("unnecessary_clarification")
-        if signals.unsupported_claim_count:
-            failures.append("unsupported_claim")
-        if signals.stale_grounding_count:
-            failures.append("stale_grounding")
-        if signals.terminology_violation_count:
-            failures.append("terminology_violation")
+        if mode != ResolutionMode.RESOLVED: failures.append("conversation_not_resolved")
+        if not signals.all_major_needs_covered: failures.append("major_need_missing")
+        if not signals.evidence_complete: failures.append("evidence_incomplete")
+        if not signals.context_consistent: failures.append("context_inconsistent")
+        if not signals.required_actionability_present: failures.append("required_actionability_missing")
+        if not signals.false_premise_corrected: failures.append("false_premise_uncorrected")
+        if signals.unnecessary_clarification_count: failures.append("unnecessary_clarification")
+        if signals.unsupported_claim_count: failures.append("unsupported_claim")
+        if signals.stale_grounding_count: failures.append("stale_grounding")
+        if signals.terminology_violation_count: failures.append("terminology_violation")
         return not failures, failures

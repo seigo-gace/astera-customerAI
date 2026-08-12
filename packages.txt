@@ -1,3 +1,0 @@
-git
-xz-utils
-ca-certificates
