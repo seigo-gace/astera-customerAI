@@ -26,6 +26,17 @@ class TaskContract(BaseModel):
     completion_conditions: list[str] = Field(default_factory=list)
 
 
+class NeedSearchPlan(BaseModel):
+    task_id: str
+    stable_need_id: str | None = None
+    targets: list[str] = Field(default_factory=list)
+    search_terms: list[str] = Field(default_factory=list)
+    required_evidence: list[str] = Field(default_factory=list)
+    reuse_fact_ids: list[str] = Field(default_factory=list)
+    refresh_fact_ids: list[str] = Field(default_factory=list)
+    invalidation_reasons: list[str] = Field(default_factory=list)
+
+
 class SearchPlan(BaseModel):
     targets: list[str] = Field(default_factory=list)
     search_terms: list[str] = Field(default_factory=list)
@@ -34,6 +45,7 @@ class SearchPlan(BaseModel):
     comparison_conditions: list[str] = Field(default_factory=list)
     verification_conditions: list[str] = Field(default_factory=list)
     unresolved_gaps: list[str] = Field(default_factory=list)
+    need_plans: list[NeedSearchPlan] = Field(default_factory=list)
     mode: SearchMode
 
 
