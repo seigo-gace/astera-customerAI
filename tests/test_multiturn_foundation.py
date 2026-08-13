@@ -3,6 +3,8 @@ import pytest
 from runtime.knowledge import GroundingConflictError, GroundingPlanner
 from runtime.schemas import FollowUpKind, GroundedFact, NeedLifecycle, NeedTask
 from runtime.state import StateStore
+from training.build_canonical import CanonicalConflictError, build_canonical
+from training.schemas import RawFact
 
 
 class Store:
@@ -93,3 +95,21 @@ async def test_same_scope_conflict_fails_closed():
     ]
     with pytest.raises(GroundingConflictError):
         await GroundingPlanner(Store(facts), Store([])).build_shared_facts([task()])
+
+
+def test_canonical_build_preserves_condition_variants():
+    rows = [
+        RawFact(fact_id="price", topic="pricing", statement="980", source_id="a", status="approved", canonical_key="price", condition_signature="basic"),
+        RawFact(fact_id="price", topic="pricing", statement="2980", source_id="b", status="approved", canonical_key="price", condition_signature="pro"),
+    ]
+    out = build_canonical(rows)
+    assert [item.statement for item in out] == ["980", "2980"]
+
+
+def test_canonical_build_rejects_same_scope_conflict():
+    rows = [
+        RawFact(fact_id="price", topic="pricing", statement="980", source_id="a", status="approved", condition_signature="basic"),
+        RawFact(fact_id="price", topic="pricing", statement="999", source_id="b", status="approved", condition_signature="basic"),
+    ]
+    with pytest.raises(CanonicalConflictError):
+        build_canonical(rows)
