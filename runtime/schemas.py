@@ -33,6 +33,13 @@ class GroundedFact(BaseModel):
     public: bool = True
     legacy: bool = False
     undecided: bool = False
+    source_ids: list[str] = Field(default_factory=list)
+    conditions: list[str] = Field(default_factory=list)
+    exceptions: list[str] = Field(default_factory=list)
+    relations: list[str] = Field(default_factory=list)
+    knowledge_key: str | None = None
+    domain: str | None = None
+    topic: str | None = None
 
 
 class TaskResolution(BaseModel):

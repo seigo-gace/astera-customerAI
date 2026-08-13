@@ -1,27 +1,33 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Iterable, Mapping
 
-from .integration import DialogueIntegrator
+from .hf_client import HF_MODEL_ID
 from .japanese_skills import JapaneseShortQASkillPack
-from .kagrra_bridge import KagrraBridge
-from .knowledge import GroundingPlanner
-from .model import ResidentRolePool
-from .quality import CompletionGate
+from .runtime_factory import InternalRuntimeDependencies, build_internal_core
 from .service import CustomerAIWork
-from .state import StateStore
-from .v8_bridge import V8Bridge
+
 
 @dataclass(frozen=True)
 class RuntimeDependencies:
-    v8_adapter: object
-    kagrra_adapter: object
     canonical_store: object
     live_state_provider: object
-    backend_factory: object
-    japanese_alias_registry: object
+    japanese_alias_registry: Mapping[str, Iterable[str]]
     japanese_fuzzy_threshold: float
+    hf_token: str | None = None
+    shared_head: object | None = None
     max_targeted_retry: int = 1
+    model_id: str = HF_MODEL_ID
+    hf_api_url: str = "https://router.huggingface.co/v1/chat/completions"
+    timeout_seconds: float = 30.0
+
 
 def build_work(deps: RuntimeDependencies) -> CustomerAIWork:
-    return CustomerAIWork(v8=V8Bridge(deps.v8_adapter),kagrra=KagrraBridge(deps.kagrra_adapter),grounding=GroundingPlanner(deps.canonical_store,deps.live_state_provider),roles=ResidentRolePool(deps.backend_factory),integrator=DialogueIntegrator(),gate=CompletionGate(),state=StateStore(),japanese=JapaneseShortQASkillPack(alias_registry=deps.japanese_alias_registry,fuzzy_threshold=deps.japanese_fuzzy_threshold),max_targeted_retry=deps.max_targeted_retry)
+    if not (0.0 <= float(deps.japanese_fuzzy_threshold) <= 100.0):
+        raise ValueError("japanese_fuzzy_threshold_out_of_range")
+    if not isinstance(deps.max_targeted_retry, int) or deps.max_targeted_retry < 0:
+        raise ValueError("max_targeted_retry_invalid")
+    japanese=JapaneseShortQASkillPack(alias_registry=deps.japanese_alias_registry,fuzzy_threshold=float(deps.japanese_fuzzy_threshold))
+    core=build_internal_core(InternalRuntimeDependencies(canonical_store=deps.canonical_store,live_state_provider=deps.live_state_provider,japanese_skill_pack=japanese,hf_token=deps.hf_token,shared_head=deps.shared_head,max_targeted_retry=deps.max_targeted_retry,model_id=deps.model_id,hf_api_url=deps.hf_api_url,timeout_seconds=deps.timeout_seconds))
+    return CustomerAIWork(core)
