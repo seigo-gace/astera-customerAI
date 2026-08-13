@@ -13,6 +13,8 @@ class RoleName(str, Enum):
 
 
 class FollowUpKind(str, Enum):
+    """Cross-turn relationship between the current message and prior needs."""
+
     CONTINUE = "continue"
     CLARIFICATION = "clarification"
     CONDITION_CHANGE = "condition_change"
