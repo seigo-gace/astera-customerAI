@@ -40,6 +40,8 @@ def _same_scope(a: GroundedFact, b: GroundedFact) -> bool:
 
 
 class GroundingPlanner:
+    """Merge reusable conversation evidence with fresh canonical/current/live facts."""
+
     PRIORITY = {"canonical": 0, "current": 1, "live": 2}
 
     def __init__(self, canonical: CanonicalKnowledgeStore, live: LiveStateProvider):
