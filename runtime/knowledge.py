@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import inspect
 from typing import Protocol
 
+from .contracts import SearchPlan
 from .schemas import GroundedFact, NeedTask
 
 
 class CanonicalKnowledgeStore(Protocol):
-    async def find_for_tasks(self, tasks: list[NeedTask]) -> list[GroundedFact]: ...
+    async def find_for_tasks(
+        self,
+        tasks: list[NeedTask],
+        plan: SearchPlan | None = None,
+    ) -> list[GroundedFact]: ...
 
 
 class LiveStateProvider(Protocol):
@@ -24,8 +30,26 @@ class GroundingPlanner:
         self.canonical = canonical
         self.live = live
 
-    async def build_shared_facts(self, tasks: list[NeedTask]) -> list[GroundedFact]:
-        raw = [*await self.canonical.find_for_tasks(tasks), *await self.live.current_facts(tasks)]
+    async def _canonical_facts(
+        self,
+        tasks: list[NeedTask],
+        plan: SearchPlan | None,
+    ) -> list[GroundedFact]:
+        method = self.canonical.find_for_tasks
+        parameters = inspect.signature(method).parameters
+        if "plan" in parameters:
+            return await method(tasks, plan=plan)
+        return await method(tasks)
+
+    async def build_shared_facts(
+        self,
+        tasks: list[NeedTask],
+        plan: SearchPlan | None = None,
+    ) -> list[GroundedFact]:
+        raw = [
+            *await self._canonical_facts(tasks, plan),
+            *await self.live.current_facts(tasks),
+        ]
         public = [f for f in raw if f.public and not f.legacy and not f.undecided]
         selected: dict[str, GroundedFact] = {}
         for fact in public:
@@ -38,5 +62,8 @@ class GroundingPlanner:
             if cp > pp:
                 selected[fact.fact_id] = fact
             elif cp == pp and previous.value != fact.value:
-                raise GroundingConflictError(f"same-authority conflict for {fact.fact_id}: {previous.source_id} vs {fact.source_id}")
+                raise GroundingConflictError(
+                    f"same-authority conflict for {fact.fact_id}: "
+                    f"{previous.source_id} vs {fact.source_id}"
+                )
         return sorted(selected.values(), key=lambda item: item.fact_id)

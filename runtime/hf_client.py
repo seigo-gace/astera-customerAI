@@ -5,15 +5,25 @@ from collections.abc import Sequence
 
 import httpx
 
-HF_MODEL_ID = "Qwen/Qwen3-8B"
+HF_MODEL_4B = "Qwen/Qwen3-4B"
+HF_MODEL_8B = "Qwen/Qwen3-8B"
+HF_ALLOWED_MODELS = frozenset({HF_MODEL_4B, HF_MODEL_8B})
 HF_CHAT_API = "https://router.huggingface.co/v1/chat/completions"
 
 
 class HFChatClient:
-    """Single physical/logical model client shared by every role."""
+    """Role-scoped Hugging Face chat client. Multiple role clients may share one HTTP pool."""
 
-    def __init__(self, *, token: str, model_id: str = HF_MODEL_ID, api_url: str = HF_CHAT_API, timeout_seconds: float = 30.0, client: httpx.AsyncClient | None = None):
-        if model_id != HF_MODEL_ID:
+    def __init__(
+        self,
+        *,
+        token: str,
+        model_id: str,
+        api_url: str = HF_CHAT_API,
+        timeout_seconds: float = 30.0,
+        client: httpx.AsyncClient | None = None,
+    ):
+        if model_id not in HF_ALLOWED_MODELS:
             raise ValueError(f"model_drift:{model_id}")
         if not token.strip() and client is None:
             raise ValueError("hf_token_required")
@@ -23,7 +33,12 @@ class HFChatClient:
         self._owned = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout_seconds)
 
-    async def chat_json(self, messages: Sequence[dict[str, str]], *, max_tokens: int = 1800) -> dict[str, object]:
+    async def chat_json(
+        self,
+        messages: Sequence[dict[str, str]],
+        *,
+        max_tokens: int = 1800,
+    ) -> dict[str, object]:
         payload = {
             "model": self.model_id,
             "messages": list(messages),

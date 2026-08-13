@@ -49,7 +49,7 @@ class CustomerAIInternalCore:
             if self.decomposer.requires_semantic_expansion(contract) and hasattr(self.roles,"semantic_decompose"):
                 contract=await self.roles.semantic_decompose(normalized_text,contract)
             grounding_plan=self.search.plan(contract,SearchMode.RUNTIME_GROUNDING)
-            facts=await self.grounding.build_shared_facts(contract.need_tasks)
+            facts=await self.grounding.build_shared_facts(contract.need_tasks, grounding_plan)
         except GroundingConflictError:
             return self._failure(request_id,session_id,turn_id,ResolutionMode.BLOCKED_CURRENT_FACT,"grounding_conflict",["grounding_conflict"])
         except Exception:

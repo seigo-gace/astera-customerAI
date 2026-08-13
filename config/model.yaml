@@ -1,8 +1,20 @@
 model:
-  base_model_id: null
-  base_revision: null
+  topology: one_work_three_role_models
+  constructive:
+    model_id: Qwen/Qwen3-4B
+    route_alias: qwen3:4b
+    revision: null
+  adversarial:
+    model_id: Qwen/Qwen3-4B
+    route_alias: qwen3:4b
+    revision: null
+  evidence_bound:
+    model_id: Qwen/Qwen3-8B
+    route_alias: qwen3:8b
+    revision: null
   backend_mode: benchmark_required
   role_adapter_mode: benchmark_required
   require_trained_domain_model: true
   allow_untrained_production_model: false
   zero_gpu: false
+  production_release_requires_revision_pin: true
