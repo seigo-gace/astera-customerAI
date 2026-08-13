@@ -12,8 +12,26 @@ class RoleName(str, Enum):
     EVIDENCE_BOUND = "evidence_bound"
 
 
+class FollowUpKind(str, Enum):
+    CONTINUE = "continue"
+    CLARIFICATION = "clarification"
+    CONDITION_CHANGE = "condition_change"
+    CORRECTION = "correction"
+    NEW_NEED = "new_need"
+
+
+class NeedLifecycle(str, Enum):
+    ACTIVE = "active"
+    RESOLVED = "resolved"
+    UNRESOLVED = "unresolved"
+    REOPENED = "reopened"
+    DEFERRED = "deferred"
+
+
 class NeedTask(BaseModel):
     task_id: str
+    stable_need_id: str | None = None
+    parent_need_id: str | None = None
     text: str
     intent: str
     required_facts: list[str] = Field(default_factory=list)
@@ -22,6 +40,7 @@ class NeedTask(BaseModel):
     response_shape: Literal["direct", "procedure", "comparison", "troubleshooting"] = "direct"
     required_user_inputs: list[str] = Field(default_factory=list)
     actionability_required: bool = False
+    condition_signature: str = ""
 
 
 class GroundedFact(BaseModel):
@@ -40,6 +59,15 @@ class GroundedFact(BaseModel):
     knowledge_key: str | None = None
     domain: str | None = None
     topic: str | None = None
+    canonical_key: str | None = None
+    condition_signature: str = ""
+    conflict_group: str | None = None
+    valid_from: str | None = None
+    valid_to: str | None = None
+    lifecycle_status: Literal["active", "superseded", "expired", "withdrawn"] = "active"
+    volatile: bool = False
+    generation_id: str | None = None
+    fact_version: str | None = None
 
 
 class TaskResolution(BaseModel):
