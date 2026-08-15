@@ -6,6 +6,11 @@ from pathlib import Path
 from typing import Iterable
 
 POLICY_MINIMUM_CRITICAL = 30
+TEST_ONLY_STRICT_CRITICAL_CLASSES = frozenset({"false_premise", "negative_unsupported"})
+TEST_ONLY_DECISION_SOURCE = (
+    "Notion 03-03 Evaluation/Test canon: false-premise correction 100%, "
+    "unsupported Astera-specific hallucination 0; test-only derivation, not Production critical canon"
+)
 
 
 @dataclass(frozen=True)
@@ -33,6 +38,36 @@ class CriticalManifest:
         unknown = set(ids) - available
         if unknown:
             raise ValueError("critical_manifest_contains_unknown_scenario:" + ",".join(sorted(unknown)))
+
+
+def derive_test_only_strict_manifest(scenarios: Iterable[object]) -> CriticalManifest:
+    """Derive a non-Production Critical manifest from already-strict canonical gates.
+
+    This helper does not define new Critical policy. It marks only scenario classes
+    that the existing Evaluation canon already treats as zero-tolerance/100% gates:
+    false-premise correction and unsupported-claim prevention. The result is for
+    test/evidence coverage only and must not be promoted to Production Critical
+    canon without a separate explicit decision.
+    """
+
+    selected: list[str] = []
+    available: list[str] = []
+    for scenario in scenarios:
+        scenario_id = str(getattr(scenario, "scenario_id", "") or "").strip()
+        scenario_class = str(getattr(scenario, "scenario_class", "") or "").strip()
+        if not scenario_id or not scenario_class:
+            raise ValueError("test_only_critical_derivation_requires_identity")
+        available.append(scenario_id)
+        if scenario_class in TEST_ONLY_STRICT_CRITICAL_CLASSES:
+            selected.append(scenario_id)
+
+    manifest = CriticalManifest(
+        scenario_ids=tuple(selected),
+        decision_source=TEST_ONLY_DECISION_SOURCE,
+        minimum_required=POLICY_MINIMUM_CRITICAL,
+    )
+    manifest.validate(available)
+    return manifest
 
 
 def load_critical_manifest(path: Path) -> CriticalManifest:
