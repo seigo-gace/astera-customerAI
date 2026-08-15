@@ -86,3 +86,24 @@ def test_public_message_limit_is_12000_chars():
         )
         assert response.status_code == 422
     app_module.set_work(None)
+
+
+def test_default_cors_allows_hp_web_app_and_native_origins():
+    with TestClient(app_module.app) as client:
+        for origin in (
+            "https://asterav8.jp",
+            "https://staging.asterav8.jp",
+            "https://open.asterav8.jp",
+            "https://localhost",
+            "capacitor://localhost",
+        ):
+            response = client.options(
+                "/respond",
+                headers={
+                    "origin": origin,
+                    "access-control-request-method": "POST",
+                    "access-control-request-headers": "content-type",
+                },
+            )
+            assert response.status_code == 200
+            assert response.headers["access-control-allow-origin"] == origin
