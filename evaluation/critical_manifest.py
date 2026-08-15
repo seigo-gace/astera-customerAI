@@ -5,12 +5,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+POLICY_MINIMUM_CRITICAL = 30
+
 
 @dataclass(frozen=True)
 class CriticalManifest:
     scenario_ids: tuple[str, ...]
     decision_source: str
-    minimum_required: int = 30
+    minimum_required: int = POLICY_MINIMUM_CRITICAL
 
     def validate(self, available_scenario_ids: Iterable[str]) -> None:
         ids = tuple(item.strip() for item in self.scenario_ids if item and item.strip())
@@ -18,6 +20,10 @@ class CriticalManifest:
             raise ValueError("critical_manifest_contains_blank_id")
         if len(set(ids)) != len(ids):
             raise ValueError("critical_manifest_contains_duplicate_id")
+        if self.minimum_required < POLICY_MINIMUM_CRITICAL:
+            raise ValueError(
+                f"critical_manifest_minimum_below_policy:{self.minimum_required}<{POLICY_MINIMUM_CRITICAL}"
+            )
         if len(ids) < self.minimum_required:
             raise ValueError(f"critical_manifest_below_minimum:{len(ids)}<{self.minimum_required}")
         if not self.decision_source.strip():
@@ -40,7 +46,8 @@ def load_critical_manifest(path: Path) -> CriticalManifest:
     }
 
     The file records already-approved scenario IDs; this module never decides
-    which scenarios are Critical.
+    which scenarios are Critical. A manifest may raise the required volume, but
+    it may never weaken the canonical minimum of 30 Critical scenarios.
     """
 
     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -52,5 +59,5 @@ def load_critical_manifest(path: Path) -> CriticalManifest:
     return CriticalManifest(
         scenario_ids=tuple(str(item) for item in scenario_ids),
         decision_source=str(raw.get("decision_source") or ""),
-        minimum_required=int(raw.get("minimum_required", 30)),
+        minimum_required=int(raw.get("minimum_required", POLICY_MINIMUM_CRITICAL)),
     )
