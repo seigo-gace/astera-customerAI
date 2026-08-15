@@ -1,0 +1,73 @@
+name: observe-hf-training
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/hf-training-observe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN || secrets.HF_KEY }}
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install HF Jobs client
+        run: python -m pip install --upgrade 'huggingface_hub>=1.16.1'
+
+      - name: Read latest HF training job
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from huggingface_hub import HfApi, fetch_job_logs
+
+          token = os.environ.get('HF_TOKEN', '').strip()
+          if not token:
+              raise SystemExit('HF_TOKEN_or_HF_KEY_missing')
+
+          api = HfApi(token=token)
+          who = api.whoami()
+          namespace = who['name']
+          jobs = api.list_jobs(namespace=namespace)
+          print('ASTERA_HF_NAMESPACE=' + namespace)
+          print('ASTERA_HF_JOB_COUNT=' + str(len(jobs)))
+          if not jobs:
+              raise SystemExit('NO_HF_JOBS_FOUND')
+
+          jobs = sorted(jobs, key=lambda j: j.created_at or j.started_at, reverse=True)
+          latest = jobs[0]
+          status = getattr(latest.status, 'stage', None) or str(latest.status)
+          print('ASTERA_HF_LATEST=' + json.dumps({
+              'id': latest.id,
+              'status': status,
+              'created_at': latest.created_at.isoformat() if latest.created_at else None,
+              'started_at': latest.started_at.isoformat() if latest.started_at else None,
+              'finished_at': latest.finished_at.isoformat() if latest.finished_at else None,
+              'flavor': str(latest.flavor) if latest.flavor else None,
+              'url': latest.url,
+          }, ensure_ascii=False, sort_keys=True))
+
+          print('ASTERA_HF_LOG_TAIL_BEGIN')
+          try:
+              for line in fetch_job_logs(
+                  job_id=latest.id,
+                  namespace=namespace,
+                  follow=False,
+                  tail=500,
+                  token=token,
+              ):
+                  print(line, end='' if line.endswith('\n') else '\n')
+          except Exception as exc:
+              print('ASTERA_HF_LOG_READ_ERROR=' + repr(exc))
+          print('ASTERA_HF_LOG_TAIL_END')
+          PY
