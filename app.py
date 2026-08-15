@@ -66,11 +66,19 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Astera Customer AI", version="0.0.0", lifespan=lifespan)
-_origins = [
-    origin.strip()
-    for origin in os.environ.get("CUSTOMER_AI_ALLOWED_ORIGINS", "https://asterav8.jp").split(",")
-    if origin.strip()
-]
+_DEFAULT_ALLOWED_ORIGINS = (
+    "https://asterav8.jp",
+    "https://staging.asterav8.jp",
+    "https://open.asterav8.jp",
+    "https://localhost",
+    "capacitor://localhost",
+)
+_configured_origins = os.environ.get("CUSTOMER_AI_ALLOWED_ORIGINS", "").strip()
+_origins = (
+    [origin.strip() for origin in _configured_origins.split(",") if origin.strip()]
+    if _configured_origins
+    else list(_DEFAULT_ALLOWED_ORIGINS)
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,
