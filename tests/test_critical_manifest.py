@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from evaluation.critical_manifest import load_critical_manifest
-from evaluation.scenarios import load_learning_eval_jsonl
+from evaluation.critical_manifest import derive_test_only_strict_manifest, load_critical_manifest
+from evaluation.scenarios import EvaluationScenario, load_learning_eval_jsonl
 
 
 def _write_eval_jsonl(path, count=30):
@@ -77,3 +77,33 @@ def test_unknown_critical_id_is_rejected_by_eval_loader(tmp_path):
 
     with pytest.raises(ValueError, match="critical_manifest_contains_unknown_scenario"):
         load_learning_eval_jsonl(eval_path, critical_ids={"not-present"})
+
+
+def test_test_only_strict_derivation_uses_only_existing_zero_tolerance_classes():
+    scenarios = [
+        EvaluationScenario(scenario_id=f"fp-{index:02d}", scenario_class="false_premise")
+        for index in range(20)
+    ] + [
+        EvaluationScenario(scenario_id=f"nu-{index:02d}", scenario_class="negative_unsupported")
+        for index in range(20)
+    ] + [
+        EvaluationScenario(scenario_id=f"direct-{index:02d}", scenario_class="direct")
+        for index in range(5)
+    ]
+
+    manifest = derive_test_only_strict_manifest(scenarios)
+
+    assert len(manifest.scenario_ids) == 40
+    assert all(scenario_id.startswith(("fp-", "nu-")) for scenario_id in manifest.scenario_ids)
+    assert not any(scenario_id.startswith("direct-") for scenario_id in manifest.scenario_ids)
+    assert "test-only" in manifest.decision_source
+
+
+def test_test_only_strict_derivation_fails_if_canonical_strict_coverage_is_too_small():
+    scenarios = [
+        EvaluationScenario(scenario_id=f"fp-{index:02d}", scenario_class="false_premise")
+        for index in range(20)
+    ]
+
+    with pytest.raises(ValueError, match="critical_manifest_below_minimum"):
+        derive_test_only_strict_manifest(scenarios)
