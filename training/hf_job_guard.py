@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 
 def failure_fingerprint(error_text: str) -> str:
@@ -28,7 +29,10 @@ class HFTrainingLaunchGuard:
     train_dataset_sha256: str
     eval_dataset_sha256: str
     result_repo_id: str
+    model_repo_id: str
+    run_id: str
     previous_job_id: str = ""
+    previous_evidence_ref: str = ""
     previous_failure_fingerprint: str = ""
     fix_evidence_sha256: str = ""
 
@@ -53,10 +57,14 @@ class HFTrainingLaunchGuard:
             raise ValueError("eval_dataset_sha256_required")
         if not self.result_repo_id.strip():
             raise ValueError("result_repo_required_before_training")
+        if not self.model_repo_id.strip():
+            raise ValueError("model_repo_required_before_training")
+        if not _RUN_ID_RE.fullmatch(self.run_id):
+            raise ValueError("run_id_required_before_training")
 
         if self.previous_failure_fingerprint:
-            if not self.previous_job_id.strip():
-                raise ValueError("previous_job_id_required_for_failed_retry")
+            if not (self.previous_job_id.strip() or self.previous_evidence_ref.strip()):
+                raise ValueError("previous_attempt_reference_required_for_failed_retry")
             if not _SHA256_RE.fullmatch(self.previous_failure_fingerprint):
                 raise ValueError("previous_failure_fingerprint_invalid")
             if not _SHA256_RE.fullmatch(self.fix_evidence_sha256):
@@ -71,12 +79,6 @@ def require_new_failure_state(
     proposed_failure_fingerprint: str,
     fix_evidence_sha256: str,
 ) -> None:
-    """Block unchanged retry conditions unless a concrete fix is evidenced.
-
-    This is intentionally fail-closed: the same observed failure fingerprint may
-    only be retried after a SHA-256 fix evidence artifact/commit has been attached.
-    """
-
     previous = previous_failure_fingerprint.strip().lower()
     proposed = proposed_failure_fingerprint.strip().lower()
     if not previous or not proposed:
