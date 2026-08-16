@@ -86,9 +86,11 @@ class CustomerAIInternalCore:
         }
         contract = None
         try:
-            contract = self.decomposer.decompose(normalized_text, context)
-            if self.decomposer.requires_semantic_expansion(contract) and hasattr(self.roles, "semantic_decompose"):
-                contract = await self.roles.semantic_decompose(normalized_text, contract)
+            seed_contract = self.decomposer.decompose(normalized_text, context)
+            contract = seed_contract
+            if self.decomposer.requires_semantic_expansion(seed_contract) and hasattr(self.roles, "semantic_decompose"):
+                semantic_contract = await self.roles.semantic_decompose(normalized_text, seed_contract)
+                contract = self.decomposer.protect_semantic_expansion(seed_contract, semantic_contract)
             bound_tasks = self.state.bind_tasks(session_id, contract.need_tasks, follow_up_kind)
             contract = contract.model_copy(update={"need_tasks": bound_tasks})
             state = self.state.get(session_id)
@@ -104,25 +106,43 @@ class CustomerAIInternalCore:
                 user_conditions=dict(state.user_conditions),
             )
         except GroundingConflictError:
+            unresolved = [t.task_id for t in contract.need_tasks] if contract is not None else []
             if contract is not None:
                 self.state.complete_turn(
                     session_id,
                     contract.need_tasks,
                     resolved_task_ids=set(),
-                    unresolved_task_ids={t.task_id for t in contract.need_tasks},
+                    unresolved_task_ids=set(unresolved),
                     satisfaction_blockers={"grounding_conflict"},
                 )
-            return self._failure(request_id, session_id, turn_id, ResolutionMode.BLOCKED_CURRENT_FACT, "grounding_conflict", ["grounding_conflict"])
+            return self._failure(
+                request_id,
+                session_id,
+                turn_id,
+                ResolutionMode.BLOCKED_CURRENT_FACT,
+                "grounding_conflict",
+                ["grounding_conflict"],
+                unresolved_task_ids=unresolved,
+            )
         except Exception:
+            unresolved = [t.task_id for t in contract.need_tasks] if contract is not None else []
             if contract is not None:
                 self.state.complete_turn(
                     session_id,
                     contract.need_tasks,
                     resolved_task_ids=set(),
-                    unresolved_task_ids={t.task_id for t in contract.need_tasks},
+                    unresolved_task_ids=set(unresolved),
                     satisfaction_blockers={"preflight_runtime_failure"},
                 )
-            return self._failure(request_id, session_id, turn_id, ResolutionMode.RUNTIME_FAILURE, "runtime_failure", ["preflight_runtime_failure"])
+            return self._failure(
+                request_id,
+                session_id,
+                turn_id,
+                ResolutionMode.RUNTIME_FAILURE,
+                "runtime_failure",
+                ["preflight_runtime_failure"],
+                unresolved_task_ids=unresolved,
+            )
 
         language = "ja" if any("\u3040" <= ch <= "\u30ff" or "\u4e00" <= ch <= "\u9fff" for ch in normalized_text) else "en"
         audience = self._audience(normalized_text)
@@ -159,14 +179,23 @@ class CustomerAIInternalCore:
             results = await self.roles.run_all(packet, capsules)
             integrated = self.integrator.integrate(results)
         except Exception:
+            unresolved = [t.task_id for t in contract.need_tasks]
             self.state.complete_turn(
                 session_id,
                 contract.need_tasks,
                 resolved_task_ids=set(),
-                unresolved_task_ids={t.task_id for t in contract.need_tasks},
+                unresolved_task_ids=set(unresolved),
                 satisfaction_blockers={"role_runtime_failure"},
             )
-            return self._failure(request_id, session_id, turn_id, ResolutionMode.RUNTIME_FAILURE, "runtime_failure", ["role_runtime_failure"])
+            return self._failure(
+                request_id,
+                session_id,
+                turn_id,
+                ResolutionMode.RUNTIME_FAILURE,
+                "runtime_failure",
+                ["role_runtime_failure"],
+                unresolved_task_ids=unresolved,
+            )
 
         external = self.audit.check(packet, results)
         quality = self.gate.evaluate(packet, integrated, external_violations=external)
@@ -204,7 +233,12 @@ class CustomerAIInternalCore:
         composed = self.composer.compose(plan)
         answer = self.refiner.refine(composed.answer or "") if composed.answer else ""
         terminology = self.japanese.terminology_violations(answer) if answer else []
-        security = self.security.check_output(answer=answer, forbidden_literals=packet.forbidden_claims, unexecuted_completion_claim=False)
+        unexecuted_claim = self.security.detect_unexecuted_completion_claim(answer) if answer else False
+        security = self.security.check_output(
+            answer=answer,
+            forbidden_literals=packet.forbidden_claims,
+            unexecuted_completion_claim=unexecuted_claim,
+        )
         major = [t for t in contract.need_tasks if t.priority == "primary"]
         resolved = set(composed.resolved_task_ids)
         all_major = all(t.task_id in resolved for t in major)
@@ -241,10 +275,22 @@ class CustomerAIInternalCore:
         unresolved_task_ids = set(composed.unresolved_task_ids)
         if not passed:
             unresolved_task_ids.update(t.task_id for t in contract.need_tasks if t.task_id not in resolved)
+
+        zero_tolerance = {"unsupported_claim", "forbidden_literal_exposed", "unexecuted_completion_claim"}
+        public_blocked = bool(zero_tolerance.intersection(violations))
+        public_answer = answer or composed.answer
+        public_mode = composed.mode
+        answered_task_ids = set(composed.resolved_task_ids)
+        if public_blocked:
+            public_answer = None
+            public_mode = ResolutionMode.SAFETY_BLOCKED
+            answered_task_ids.clear()
+            unresolved_task_ids.update(t.task_id for t in contract.need_tasks)
+
         self.state.complete_turn(
             session_id,
             contract.need_tasks,
-            resolved_task_ids=resolved,
+            resolved_task_ids=resolved if not public_blocked else set(),
             unresolved_task_ids=unresolved_task_ids,
             evidence_gaps=set(quality.missing_evidence_task_ids),
             satisfaction_blockers=set(violations),
@@ -254,37 +300,46 @@ class CustomerAIInternalCore:
         if not passed:
             if "grounding_conflict" in violations:
                 failure_class = "grounding_conflict"
+            elif public_blocked or not security.passed:
+                failure_class = "safety_rejection"
             elif {"major_need_missing", "evidence_incomplete", "conversation_not_resolved"}.intersection(violations):
                 failure_class = "coverage_defect"
-            elif not security.passed:
-                failure_class = "safety_rejection"
             else:
                 failure_class = "runtime_failure"
         return FinalResponse(
             request_id=request_id,
             session_id=session_id,
             turn_id=turn_id,
-            answer=answer or composed.answer,
-            answered_task_ids=list(composed.resolved_task_ids),
-            unresolved_task_ids=list(composed.unresolved_task_ids),
+            answer=public_answer,
+            answered_task_ids=sorted(answered_task_ids),
+            unresolved_task_ids=sorted(unresolved_task_ids),
             evidence_ids=list(integrated.evidence_ids),
             resolution_score=quality.resolution_score,
             passed=passed,
-            resolution_mode=composed.mode,
+            resolution_mode=public_mode,
             clarification_questions=list(composed.clarification_questions),
             failure_class=failure_class,
             violations=violations,
         )
 
     @staticmethod
-    def _failure(request_id, session_id, turn_id, mode, failure_class, violations):
+    def _failure(
+        request_id,
+        session_id,
+        turn_id,
+        mode,
+        failure_class,
+        violations,
+        *,
+        unresolved_task_ids=None,
+    ):
         return FinalResponse(
             request_id=request_id,
             session_id=session_id,
             turn_id=turn_id,
             answer=None,
             answered_task_ids=[],
-            unresolved_task_ids=[],
+            unresolved_task_ids=list(unresolved_task_ids or ()),
             evidence_ids=[],
             resolution_score=0.0,
             passed=False,

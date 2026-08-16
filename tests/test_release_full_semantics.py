@@ -62,3 +62,25 @@ def test_critical_contract_failure_reduces_critical_resolution() -> None:
 
     assert decision.passed is False
     assert "critical_resolution_below_gate" in decision.failures
+
+
+def test_resolution_and_satisfaction_are_measured_independently() -> None:
+    scores = _passing_scores()
+    scores[0].satisfied = False
+
+    decision = evaluate_release(scores)
+
+    assert decision.resolution_rate == 1.0
+    assert decision.satisfaction_rate < 1.0
+    assert decision.resolution_rate != decision.satisfaction_rate
+
+
+def test_resolution_failure_does_not_rewrite_satisfaction_measurement() -> None:
+    scores = _passing_scores()
+    scores[0].resolved = False
+
+    decision = evaluate_release(scores)
+
+    assert decision.resolution_rate < 1.0
+    assert decision.satisfaction_rate == 1.0
+    assert decision.resolution_rate != decision.satisfaction_rate

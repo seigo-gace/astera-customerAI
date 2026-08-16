@@ -7,6 +7,8 @@ from .contracts import TaskContract
 from .schemas import NeedTask
 
 _SENTENCE_SPLIT = re.compile(r"(?:\n{2,}|(?<=[。！？!?])\s*)")
+_COVERAGE_SPLIT = re.compile(r"(?:\n+|[。！？!?、,]+|(?:さらに|加えて|また|なお|かつ|一方で))")
+_COVERAGE_NOISE = re.compile(r"[\s\u3000・:：;；（）()「」『』【】\[\]\"'`]+")
 _COMPARISON = ("比較", "違い", "どちら", "どっち", "vs", "対して")
 _PROCEDURE = ("方法", "手順", "やり方", "どうや", "設定", "登録", "作成", "実装")
 _TROUBLE = ("エラー", "不具合", "動か", "失敗", "直ら", "できない", "困")
@@ -40,6 +42,19 @@ class TaskDecomposer:
     def _grounding_required(text: str) -> bool:
         folded = text.casefold()
         return not any(k in folded for k in ("ありがとう", "thanks", "thank you", "こんにちは", "hello"))
+
+    @staticmethod
+    def _coverage_normalize(text: str) -> str:
+        return _COVERAGE_NOISE.sub("", text.casefold())
+
+    @classmethod
+    def _coverage_fragments(cls, text: str) -> tuple[str, ...]:
+        fragments: list[str] = []
+        for part in _COVERAGE_SPLIT.split(text):
+            normalized = cls._coverage_normalize(part)
+            if len(normalized) >= 2:
+                fragments.append(normalized)
+        return tuple(dict.fromkeys(fragments))
 
     def _make_task(self, text: str, idx: int, *, priority: str = "primary") -> NeedTask:
         shape = self._shape(text)
@@ -83,3 +98,26 @@ class TaskDecomposer:
 
     def requires_semantic_expansion(self, contract: TaskContract) -> bool:
         return "semantic_decomposition_required" in contract.constraints
+
+    def protect_semantic_expansion(self, seed: TaskContract, candidate: TaskContract) -> TaskContract:
+        """Accept semantic expansion only when preservation of the original need is provable.
+
+        The semantic model may paraphrase freely, but Customer AI must never silently
+        drop a user clause. If deterministic coverage cannot be proven, fall back to
+        the seed's full-request task rather than trusting the model decomposition.
+        """
+
+        if not candidate.need_tasks:
+            return seed
+        coverage_text = " ".join([candidate.target, *(task.text for task in candidate.need_tasks)])
+        coverage = self._coverage_normalize(coverage_text)
+        required = self._coverage_fragments(seed.target)
+        if required and not all(fragment in coverage for fragment in required):
+            return seed
+        return candidate.model_copy(
+            update={
+                "target": seed.target,
+                "conditions": list(dict.fromkeys([*seed.conditions, *candidate.conditions])),
+                "constraints": [item for item in candidate.constraints if item != "semantic_decomposition_required"],
+            }
+        )

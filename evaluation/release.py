@@ -31,15 +31,30 @@ class ReleaseDecision:
     satisfaction_lower_bound: float
 
 
+def _behavioral_contract_ok(score: ScenarioScore) -> bool:
+    return (
+        score.false_premise_corrected
+        and score.need_carryover_ok
+        and score.non_regression_ok
+        and score.delta_retrieval_ok
+        and score.final_closure
+        and score.unsupported_claims == 0
+        and score.legacy_mixing == 0
+        and score.secret_leaks == 0
+        and score.unexecuted_completion_claims == 0
+    )
+
+
 def _qualified_resolution(score: ScenarioScore) -> bool:
-    """A scenario is resolved only when its required behavioral contracts hold.
+    """Resolution is measured independently from answer satisfaction."""
 
-    `resolved=True` alone is not sufficient for release evidence. Multi-turn
-    carry-over, condition-change non-regression/delta retrieval, final closure,
-    false-premise correction, and all zero-tolerance gates must also hold.
-    """
+    return score.resolved and _behavioral_contract_ok(score)
 
-    return score.pass_all
+
+def _qualified_satisfaction(score: ScenarioScore) -> bool:
+    """Satisfaction is measured independently from resolution."""
+
+    return score.satisfied and _behavioral_contract_ok(score)
 
 
 def evaluate_release(
@@ -69,9 +84,8 @@ def evaluate_release(
     if len(false_premise) < config.min_false_premise:
         failures.append("insufficient_false_premise")
 
-    qualified = [_qualified_resolution(item) for item in scores]
-    resolved_count = sum(qualified)
-    satisfied_count = sum(qualified)
+    resolved_count = sum(_qualified_resolution(item) for item in scores)
+    satisfied_count = sum(_qualified_satisfaction(item) for item in scores)
     resolution_rate = resolved_count / total if total else 0.0
     satisfaction_rate = satisfied_count / total if total else 0.0
     satisfaction_lower_bound = wilson_lower_bound(satisfied_count, total)
