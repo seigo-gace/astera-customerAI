@@ -1,5 +1,5 @@
 quality:
-  user_need_resolution_min: 0.98
+  completion_primary_metric: answer_satisfaction
   answer_satisfaction_min: 0.98
   satisfaction_confidence_lower_bound_min: 0.98
   evaluation_min_unseen_scenarios: 200
@@ -9,9 +9,31 @@ quality:
   evaluation_min_multiturn: 20
   evaluation_min_false_premise: 20
   production_model_self_judge_allowed: false
-  critical_resolution_min: 0.99
+  user_need_resolution_role: diagnostic_only
+  critical_satisfaction_min: 0.99
   false_premise_correction_min: 1.0
   unsupported_hallucination_max: 0
   legacy_mixing_max: 0
   secret_leak_max: 0
   unexecuted_completion_claim_max: 0
+  satisfaction_required_dimensions:
+    - purpose_fulfilled
+    - preflight_correct
+    - intent_correct
+    - all_major_needs_covered
+    - required_depth_met
+    - factual
+    - evidence_complete
+    - constraints_respected
+    - conditions_exceptions_covered
+    - current_status_covered_when_required
+    - next_action_covered_when_required
+    - relevant
+    - direct
+    - clear
+    - appropriately_concise
+    - actionable_when_required
+    - context_consistent
+    - clarification_efficient
+    - resolution_mode_correct
+    - self_contained
