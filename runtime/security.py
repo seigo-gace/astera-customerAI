@@ -9,7 +9,7 @@ from .schemas import GroundedFact
 
 _UNEXECUTED_JA = re.compile(
     r"(?:^|[。！？!?\n])\s*(?:[-*・]\s*)?(?:(?:こちら|当方)で\s*|私(?:が|は)?\s*)?"
-    r"(?:(?:実行|変更|更新|削除|作成|送信|登録|設定|反映|デプロイ|公開|保存|修正|コミット|プッシュ|処理)(?:を)?(?:し|いたし)(?:ました|ておきました|てあります)|完了しました|対応済みです|反映済みです)"
+    r"(?:(?:実行|変更|更新|削除|作成|送信|登録|設定|反映|デプロイ|公開|保存|修正|コミット|プッシュ|処理)(?:を)?(?:し|いたし)(?:ました|ておきました|てあります)|完了しました)"
 )
 _UNEXECUTED_EN = re.compile(
     r"(?:^|[.!?\n])\s*(?:[-*]\s*)?(?:i|we)\s+(?:have\s+)?"
@@ -53,6 +53,6 @@ class PublicBoundary:
             if literal and literal in answer:
                 violations.append("forbidden_literal_exposed")
                 break
-        if unexecuted_completion_claim:
+        if unexecuted_completion_claim or self.detect_unexecuted_completion_claim(answer):
             violations.append("unexecuted_completion_claim")
         return SecurityCheck(passed=not violations, violations=violations)

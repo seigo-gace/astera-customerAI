@@ -28,3 +28,8 @@ def test_unexecuted_completion_claim_is_detected_from_public_text():
     assert boundary.detect_unexecuted_completion_claim("I have deployed the change.") is True
     assert boundary.detect_unexecuted_completion_claim("ユーザーが設定しました。") is False
     assert boundary.detect_unexecuted_completion_claim("設定方法を説明します。") is False
+    auto = boundary.check_output(
+        answer="設定しました。", forbidden_literals=[], unexecuted_completion_claim=False
+    )
+    assert auto.passed is False
+    assert "unexecuted_completion_claim" in auto.violations

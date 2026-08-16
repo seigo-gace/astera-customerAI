@@ -40,7 +40,7 @@ def test_semantic_expansion_falls_back_when_original_need_is_dropped():
     seed = decomposer.decompose("料金を比較して、さらに設定方法も教えて", {})
     dropped = seed.model_copy(
         update={
-            "target": "料金を比較して",
+            "target": seed.target,
             "constraints": [],
             "need_tasks": [
                 NeedTask(
@@ -61,6 +61,7 @@ def test_semantic_expansion_falls_back_when_original_need_is_dropped():
     assert guarded.target == seed.target
     assert len(guarded.need_tasks) == 1
     assert guarded.need_tasks[0].text == seed.target
+    assert "semantic_decomposition_required" not in guarded.constraints
 
 
 def test_semantic_expansion_is_accepted_only_with_full_source_coverage():

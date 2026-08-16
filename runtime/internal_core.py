@@ -281,16 +281,25 @@ class CustomerAIInternalCore:
         public_answer = answer or composed.answer
         public_mode = composed.mode
         answered_task_ids = set(composed.resolved_task_ids)
+        state_resolved = set(resolved)
         if public_blocked:
             public_answer = None
             public_mode = ResolutionMode.SAFETY_BLOCKED
             answered_task_ids.clear()
             unresolved_task_ids.update(t.task_id for t in contract.need_tasks)
+            state_resolved.clear()
+        elif not passed and composed.mode == ResolutionMode.RESOLVED:
+            # A fully composed answer that failed a non-zero-tolerance quality gate
+            # must not be advertised or persisted as resolved. Keep the text as a
+            # safe partial response, but keep the need open for repair/follow-up.
+            public_mode = ResolutionMode.SAFE_PARTIAL
+            unresolved_task_ids.update(t.task_id for t in contract.need_tasks)
+            state_resolved.clear()
 
         self.state.complete_turn(
             session_id,
             contract.need_tasks,
-            resolved_task_ids=resolved if not public_blocked else set(),
+            resolved_task_ids=state_resolved,
             unresolved_task_ids=unresolved_task_ids,
             evidence_gaps=set(quality.missing_evidence_task_ids),
             satisfaction_blockers=set(violations),

@@ -109,11 +109,15 @@ class TaskDecomposer:
 
         if not candidate.need_tasks:
             return seed
-        coverage_text = " ".join([candidate.target, *(task.text for task in candidate.need_tasks)])
+        coverage_text = " ".join(task.text for task in candidate.need_tasks)
         coverage = self._coverage_normalize(coverage_text)
         required = self._coverage_fragments(seed.target)
         if required and not all(fragment in coverage for fragment in required):
-            return seed
+            return seed.model_copy(
+                update={
+                    "constraints": [item for item in seed.constraints if item != "semantic_decomposition_required"]
+                }
+            )
         return candidate.model_copy(
             update={
                 "target": seed.target,
