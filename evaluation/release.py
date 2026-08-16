@@ -26,10 +26,21 @@ class ReleaseDecision:
     passed: bool
     failures: tuple[str, ...]
     primary_metric: str
+    runtime_revision: str | None
+    model_revision: str | None
+    corpus_revision: str | None
     resolution_rate: float
     satisfaction_rate: float
     satisfaction_lower_bound: float
     critical_satisfaction_rate: float
+
+
+def _single_revision(scores: list[ScenarioScore], attr: str, failure: str, failures: list[str]) -> str | None:
+    values = {getattr(score, attr) for score in scores if getattr(score, attr)}
+    if len(values) != 1:
+        failures.append(failure)
+        return None
+    return next(iter(values))
 
 
 def evaluate_release(
@@ -38,6 +49,10 @@ def evaluate_release(
 ) -> ReleaseDecision:
     total = len(scores)
     failures: list[str] = []
+
+    runtime_revision = _single_revision(scores, "runtime_revision", "mixed_runtime_revision", failures)
+    model_revision = _single_revision(scores, "model_revision", "mixed_model_revision", failures)
+    corpus_revision = _single_revision(scores, "corpus_revision", "mixed_corpus_revision", failures)
 
     if total < config.min_unseen_scenarios:
         failures.append("insufficient_unseen_scenarios")
@@ -59,7 +74,6 @@ def evaluate_release(
     if len(false_premise) < config.min_false_premise:
         failures.append("insufficient_false_premise")
 
-    # Resolution remains a diagnostic. Completion is determined by satisfaction.
     resolved_count = sum(item.resolution_pass for item in scores)
     satisfied_count = sum(item.satisfaction_pass for item in scores)
     resolution_rate = resolved_count / total if total else 0.0
@@ -95,6 +109,9 @@ def evaluate_release(
         passed=not failures,
         failures=tuple(dict.fromkeys(failures)),
         primary_metric="answer_satisfaction",
+        runtime_revision=runtime_revision,
+        model_revision=model_revision,
+        corpus_revision=corpus_revision,
         resolution_rate=resolution_rate,
         satisfaction_rate=satisfaction_rate,
         satisfaction_lower_bound=satisfaction_lower_bound,

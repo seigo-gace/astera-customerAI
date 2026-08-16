@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .satisfaction import SatisfactionScore
 
@@ -8,6 +8,9 @@ from .satisfaction import SatisfactionScore
 class ScenarioScore(BaseModel):
     scenario_id: str
     scenario_class: str
+    runtime_revision: str = Field(min_length=1)
+    model_revision: str = Field(min_length=1)
+    corpus_revision: str = Field(min_length=1)
     critical: bool = False
     multi_turn: bool = False
     false_premise: bool = False
@@ -45,7 +48,7 @@ class ScenarioScore(BaseModel):
 
     @property
     def satisfaction_pass(self) -> bool:
-        """Primary completion signal for one user scenario."""
+        """Primary completion signal for one evidence-bound user scenario."""
         return self.resolved and self.satisfaction.passed and self.behavioral_contract_ok
 
     @property

@@ -37,3 +37,5 @@ quality:
     - clarification_efficient
     - resolution_mode_correct
     - self_contained
+  same_revision_evidence_required: true
+  evaluation_input_contract: scenario_plus_runtime_evidence

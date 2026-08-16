@@ -14,6 +14,8 @@ class EvaluationScenario(BaseModel):
     multi_turn: bool = False
     false_premise: bool = False
     expected_need_labels: list[str] = Field(default_factory=list)
+    required_fact_ids: list[str] = Field(default_factory=list)
+    user_turns: list[str] = Field(default_factory=list, min_length=1)
     followup_depth: int = 0
     requires_need_carryover: bool = False
     requires_non_regression: bool = False
@@ -33,12 +35,11 @@ def load_learning_eval_jsonl(
     *,
     critical_ids: Iterable[str] = (),
 ) -> list[EvaluationScenario]:
-    """Convert the validated Learning Corpus JSONL holdout into evaluation scenarios.
+    """Convert validated Learning Corpus JSONL into evidence-bound evaluation scenarios.
 
-    `critical` is intentionally not inferred. The caller must provide scenario IDs
-    from an independently approved critical manifest. Multi-turn and false-premise
-    flags are derived only from the canonical scenario_class value already present
-    in the learning corpus.
+    The scenario keeps the exact user turns and required facts so later answer
+    satisfaction evidence can be tied to what the runtime actually received.
+    `critical` is never inferred; callers provide independently approved IDs.
     """
 
     approved_critical_ids = set(critical_ids)
@@ -64,11 +65,21 @@ def load_learning_eval_jsonl(
         if not isinstance(need_labels, list):
             raise ValueError(f"evaluation_need_labels_must_be_list:{scenario_id}")
 
+        fact_ids = raw.get("grounding_required_fact_ids") or raw.get("fact_ids") or []
+        if not isinstance(fact_ids, list):
+            raise ValueError(f"evaluation_fact_ids_must_be_list:{scenario_id}")
+
         messages = raw.get("messages") or []
-        user_turn_count = sum(
-            1 for message in messages if isinstance(message, dict) and message.get("role") == "user"
-        )
-        followup_depth = max(0, user_turn_count - 1)
+        if not isinstance(messages, list):
+            raise ValueError(f"evaluation_messages_must_be_list:{scenario_id}")
+        user_turns = [
+            str(message.get("content") or "")
+            for message in messages
+            if isinstance(message, dict) and message.get("role") == "user"
+        ]
+        if not user_turns or any(not turn.strip() for turn in user_turns):
+            raise ValueError(f"evaluation_user_turns_missing:{scenario_id}")
+        followup_depth = max(0, len(user_turns) - 1)
 
         rows.append(
             EvaluationScenario(
@@ -77,7 +88,9 @@ def load_learning_eval_jsonl(
                 critical=scenario_id in approved_critical_ids,
                 multi_turn=scenario_class == "multi_turn",
                 false_premise=scenario_class == "false_premise",
-                expected_need_labels=[str(item) for item in need_labels],
+                expected_need_labels=[str(item) for item in need_labels if str(item).strip()],
+                required_fact_ids=[str(item) for item in fact_ids if str(item).strip()],
+                user_turns=user_turns,
                 followup_depth=followup_depth,
                 requires_need_carryover=scenario_class == "multi_turn" and followup_depth > 0,
                 requires_non_regression=scenario_class in {"multi_turn", "condition_change"},

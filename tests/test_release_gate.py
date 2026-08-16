@@ -6,11 +6,16 @@ from evaluation.satisfaction import SatisfactionScore, wilson_lower_bound
 from evaluation.scorer import ScenarioScore
 
 
+RUNTIME_REV = "runtime@abc"
+MODEL_REV = "model@def"
+CORPUS_REV = "corpus@ghi"
+
+
 def satisfaction(**overrides):
     values = {
         "evaluator_source": "external_judge",
         "evaluator_ref": "judge:independent@rev-1",
-        "production_model_ref": "production:domain@rev-9",
+        "production_model_ref": MODEL_REV,
         "purpose_fulfilled": True,
         "preflight_correct": True,
         "intent_correct": True,
@@ -43,6 +48,9 @@ def build_scores(count=220):
         ScenarioScore(
             scenario_id=f"s{i}",
             scenario_class=classes[i % 11],
+            runtime_revision=RUNTIME_REV,
+            model_revision=MODEL_REV,
+            corpus_revision=CORPUS_REV,
             critical=i < 35,
             multi_turn=35 <= i < 60,
             false_premise=60 <= i < 85,
@@ -72,6 +80,9 @@ def test_sufficient_all_pass_corpus_can_pass_release_gate():
     assert decision.passed
     assert decision.primary_metric == "answer_satisfaction"
     assert decision.satisfaction_rate == 1.0
+    assert decision.runtime_revision == RUNTIME_REV
+    assert decision.model_revision == MODEL_REV
+    assert decision.corpus_revision == CORPUS_REV
 
 
 def test_single_satisfied_boolean_is_not_valid_release_evidence():
@@ -79,6 +90,9 @@ def test_single_satisfied_boolean_is_not_valid_release_evidence():
         ScenarioScore(
             scenario_id="legacy",
             scenario_class="direct",
+            runtime_revision=RUNTIME_REV,
+            model_revision=MODEL_REV,
+            corpus_revision=CORPUS_REV,
             resolved=True,
             satisfied=True,
         )
@@ -96,12 +110,17 @@ def test_structured_satisfaction_requires_user_value_dimensions():
 
 def test_production_model_cannot_be_its_own_external_judge():
     with pytest.raises(ValueError, match="external_judge_must_be_independent"):
-        satisfaction(
-            evaluator_ref="same-model@rev",
-            production_model_ref="same-model@rev",
-        )
+        satisfaction(evaluator_ref=MODEL_REV)
 
 
 def test_unknown_evaluator_source_is_rejected():
     with pytest.raises(ValidationError):
         satisfaction(evaluator_source="production_model")
+
+
+def test_mixed_revisions_cannot_be_combined_into_one_release_claim():
+    scores = build_scores(220)
+    scores[-1].runtime_revision = "runtime@other"
+    decision = evaluate_release(scores)
+    assert not decision.passed
+    assert "mixed_runtime_revision" in decision.failures
