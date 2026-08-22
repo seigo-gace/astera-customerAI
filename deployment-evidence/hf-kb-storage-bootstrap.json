@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "workflow": "hf-kb-storage-bootstrap",
+  "commit_sha": "27bb2bc7232032bca297c2ca833ceb1ff68b98c9",
+  "preflight_outcome": "failure",
+  "bucket_id": "G-ACE/astera-customerai-kb",
+  "kb_payload_exposed_to_github": false,
+  "markers": [
+    "HF_AUTH_DIAGNOSTIC=HF_TOKEN:missing",
+    "HF_AUTH_DIAGNOSTIC=HF_KEY:identity=G-ACE",
+    "HF_PROBE_CLEANUP=true",
+    "HF_IDENTITY=G-ACE",
+    "HF_AUTH_SELECTED=HF_KEY",
+    "HF_BUCKET_PRIVATE=true",
+    "HF_BUCKET_WRITE=true",
+    "NOTION_TOKEN_MISSING"
+  ]
+}
