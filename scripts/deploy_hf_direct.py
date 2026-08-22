@@ -98,6 +98,32 @@ def _validate_alias_registry(path: Path | None) -> None:
         raise SystemExit("alias_registry_invalid_shape")
 
 
+def _required_env(key: str) -> str:
+    value = os.environ.get(key, "").strip()
+    if not value:
+        raise SystemExit(f"{key}_missing")
+    return value
+
+
+def _validate_trained_model_config() -> dict[str, str]:
+    from runtime.hf_client import HF_MODEL_4B, HF_MODEL_8B
+
+    config = {
+        "model_4b_id": _required_env("CUSTOMER_AI_MODEL_4B_ID"),
+        "model_4b_revision": _required_env("CUSTOMER_AI_MODEL_4B_REVISION"),
+        "model_4b_api_url": _required_env("CUSTOMER_AI_MODEL_4B_API_URL"),
+        "model_8b_id": _required_env("CUSTOMER_AI_MODEL_8B_ID"),
+        "model_8b_revision": _required_env("CUSTOMER_AI_MODEL_8B_REVISION"),
+        "model_8b_api_url": _required_env("CUSTOMER_AI_MODEL_8B_API_URL"),
+    }
+    if config["model_4b_id"] == HF_MODEL_4B or config["model_8b_id"] == HF_MODEL_8B:
+        raise SystemExit("trained_domain_model_required_no_base_model_fallback")
+    for key in ("model_4b_api_url", "model_8b_api_url"):
+        if not config[key].startswith("https://"):
+            raise SystemExit(f"{key}_must_be_https")
+    return config
+
+
 def _space_readme(root: Path) -> str:
     body = (root / "README.md").read_text(encoding="utf-8") if (root / "README.md").is_file() else ""
     return (
@@ -117,6 +143,7 @@ def _stage_payload(
     current_facts: Path | None,
     alias_registry: Path | None,
     generation_id: str,
+    trained_models: dict[str, str],
 ) -> dict[str, Any]:
     for name in ("app.py", "requirements.txt", "pyproject.toml", ".dockerignore"):
         shutil.copy2(root / name, stage / name)
@@ -144,7 +171,7 @@ def _stage_payload(
     (stage / "README.md").write_text(_space_readme(root), encoding="utf-8")
 
     manifest: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "source_sha": _git_head(root),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "kb_generation_id": generation_id,
@@ -152,6 +179,11 @@ def _stage_payload(
         "kb_snapshot_bytes": kb_snapshot.stat().st_size,
         "current_facts_sha256": _sha256(current_facts) if current_facts else None,
         "alias_registry_sha256": _sha256(alias_registry) if alias_registry else None,
+        "trained_model_4b_id": trained_models["model_4b_id"],
+        "trained_model_4b_revision": trained_models["model_4b_revision"],
+        "trained_model_8b_id": trained_models["model_8b_id"],
+        "trained_model_8b_revision": trained_models["model_8b_revision"],
+        "private_endpoint_urls_persisted": False,
         "deployment_path": "direct_hf_hub_no_github_actions",
     }
     (stage / "deployment-manifest.json").write_text(
@@ -177,6 +209,7 @@ def _sync_runtime_config(
     has_current_facts: bool,
     has_alias_registry: bool,
     generation_id: str,
+    trained_models: dict[str, str],
 ) -> None:
     existing_secrets = api.get_space_secrets(space_id)
     if runtime_token:
@@ -184,7 +217,7 @@ def _sync_runtime_config(
             space_id,
             key="HF_TOKEN",
             value=runtime_token,
-            description="Customer AI runtime inference token",
+            description="Customer AI private trained-model inference token",
         )
     elif "HF_TOKEN" not in existing_secrets and "HF_KEY" not in existing_secrets:
         raise SystemExit(
@@ -192,24 +225,24 @@ def _sync_runtime_config(
             "or configure HF_TOKEN/HF_KEY in the Space before deployment"
         )
 
-    api.add_space_variable(
-        space_id,
-        key="CUSTOMER_AI_KB_SNAPSHOT_PATH",
-        value="/app/kb/canonical.jsonl",
-        description="Deployed canonical Customer AI KB snapshot",
-    )
-    api.add_space_variable(
-        space_id,
-        key="CUSTOMER_AI_KB_GENERATION_ID",
-        value=generation_id,
-        description="Customer AI KB generation deployed with the runtime",
-    )
+    variables = {
+        "CUSTOMER_AI_KB_SNAPSHOT_PATH": "/app/kb/canonical.jsonl",
+        "CUSTOMER_AI_KB_GENERATION_ID": generation_id,
+        "CUSTOMER_AI_MODEL_4B_ID": trained_models["model_4b_id"],
+        "CUSTOMER_AI_MODEL_4B_REVISION": trained_models["model_4b_revision"],
+        "CUSTOMER_AI_MODEL_4B_API_URL": trained_models["model_4b_api_url"],
+        "CUSTOMER_AI_MODEL_8B_ID": trained_models["model_8b_id"],
+        "CUSTOMER_AI_MODEL_8B_REVISION": trained_models["model_8b_revision"],
+        "CUSTOMER_AI_MODEL_8B_API_URL": trained_models["model_8b_api_url"],
+    }
+    for key, value in variables.items():
+        api.add_space_variable(space_id, key=key, value=value)
+
     if has_current_facts:
         api.add_space_variable(
             space_id,
             key="CUSTOMER_AI_CURRENT_FACTS_PATH",
             value="/app/kb/current-facts.jsonl",
-            description="Deployed current-facts snapshot",
         )
     else:
         try:
@@ -221,7 +254,6 @@ def _sync_runtime_config(
             space_id,
             key="CUSTOMER_AI_ALIAS_REGISTRY_PATH",
             value="/app/kb/aliases.json",
-            description="Deployed Japanese alias registry",
         )
     else:
         try:
@@ -326,6 +358,7 @@ def main() -> int:
     _validate_kb(kb_snapshot, generation_id)
     _validate_current_facts(current_facts, generation_id)
     _validate_alias_registry(alias_registry)
+    trained_models = _validate_trained_model_config()
 
     with tempfile.TemporaryDirectory(prefix="astera-customerai-hf-") as tmp:
         stage = Path(tmp)
@@ -336,6 +369,7 @@ def main() -> int:
             current_facts,
             alias_registry,
             generation_id,
+            trained_models,
         )
         expected = _expected_files(stage)
         print(json.dumps({"preflight": "ok", "manifest": manifest, "files": sorted(expected)}, ensure_ascii=False))
@@ -358,6 +392,7 @@ def main() -> int:
             has_current_facts=current_facts is not None,
             has_alias_registry=alias_registry is not None,
             generation_id=generation_id,
+            trained_models=trained_models,
         )
 
         info = api.repo_info(repo_id=args.space_id, repo_type="space")
@@ -399,6 +434,10 @@ def main() -> int:
             "source_sha": manifest["source_sha"],
             "kb_generation_id": generation_id,
             "kb_snapshot_sha256": manifest["kb_snapshot_sha256"],
+            "trained_model_4b_id": manifest["trained_model_4b_id"],
+            "trained_model_4b_revision": manifest["trained_model_4b_revision"],
+            "trained_model_8b_id": manifest["trained_model_8b_id"],
+            "trained_model_8b_revision": manifest["trained_model_8b_revision"],
             "space_stage": runtime.stage,
             **http_evidence,
         }
