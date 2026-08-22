@@ -26,6 +26,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Record workflow start
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          mkdir -p deployment-evidence
+          python - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+          evidence = {
+              'verified_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ['SOURCE_SHA'],
+              'status': 'started',
+          }
+          Path('deployment-evidence/staging-app-customer-ai-live.json').write_text(
+              json.dumps(evidence, ensure_ascii=False, indent=2) + '\n',
+              encoding='utf-8',
+          )
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add deployment-evidence/staging-app-customer-ai-live.json
+          git commit -m 'Record Customer AI hotfix start' || exit 0
+          git push origin HEAD:main
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -87,7 +113,6 @@ jobs:
           import json
           import os
           import time
-          import urllib.error
           import urllib.request
           from datetime import datetime, timezone
           from pathlib import Path
@@ -168,8 +193,6 @@ jobs:
 
       - name: Record successful live verification
         run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add deployment-evidence/staging-app-customer-ai-live.json
           git commit -m 'Record staging Customer AI live connection' || exit 0
           git push origin HEAD:main
