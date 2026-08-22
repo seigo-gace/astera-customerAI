@@ -1,0 +1,23 @@
+name: customer-ai-selfhosted-probe
+
+on:
+  issues:
+    types: [opened, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: github.actor == 'seigo-gace' && github.event.issue.title == '[selfhosted-probe] customer-ai'
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 5
+    steps:
+      - name: Prove self-hosted runner execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'CUSTOMER_AI_SELFHOSTED_PROBE_OK=1'
+          echo "RUNNER_NAME=${RUNNER_NAME:-unknown}"
+          echo "RUNNER_OS=${RUNNER_OS:-unknown}"
+          echo "RUNNER_ARCH=${RUNNER_ARCH:-unknown}"
