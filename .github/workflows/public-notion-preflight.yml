@@ -1,0 +1,68 @@
+name: customer-ai-public-notion-preflight
+
+on:
+  issues:
+    types: [opened, reopened, edited]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  preflight:
+    if: github.actor == 'seigo-gace' && github.event.issue.title == '[notion-preflight] customer-ai'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      NOTION_PAGE_ID: 3c4cdcf1-28e4-81fd-9f5d-e7eccadd6af2
+    steps:
+      - name: Verify private Notion page access without printing content
+        id: notion
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${NOTION_TOKEN:-}" || { echo 'NOTION_TOKEN_MISSING'; exit 20; }
+          code=$(curl --silent --show-error --output /tmp/page.json --write-out '%{http_code}' \
+            -H "Authorization: Bearer ${NOTION_TOKEN}" \
+            -H 'Notion-Version: 2022-06-28' \
+            "https://api.notion.com/v1/pages/${NOTION_PAGE_ID}")
+          test "$code" = '200' || { echo "NOTION_PAGE_HTTP=${code}"; exit 21; }
+          child_code=$(curl --silent --show-error --output /tmp/children.json --write-out '%{http_code}' \
+            -H "Authorization: Bearer ${NOTION_TOKEN}" \
+            -H 'Notion-Version: 2022-06-28' \
+            "https://api.notion.com/v1/blocks/${NOTION_PAGE_ID}/children?page_size=100")
+          test "$child_code" = '200' || { echo "NOTION_CHILDREN_HTTP=${child_code}"; exit 22; }
+          count=$(python - <<'PY'
+          import json
+          with open('/tmp/children.json', encoding='utf-8') as f:
+              data=json.load(f)
+          print(len(data.get('results', [])))
+          PY
+          )
+          echo "page_http=$code" >> "$GITHUB_OUTPUT"
+          echo "children_http=$child_code" >> "$GITHUB_OUTPUT"
+          echo "block_count=$count" >> "$GITHUB_OUTPUT"
+      - name: Report safe result
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPOSITORY: ${{ github.repository }}
+          JOB_STATUS: ${{ job.status }}
+          PAGE_HTTP: ${{ steps.notion.outputs.page_http }}
+          CHILDREN_HTTP: ${{ steps.notion.outputs.children_http }}
+          BLOCK_COUNT: ${{ steps.notion.outputs.block_count }}
+        run: |
+          body=$(printf 'NOTION_PREFLIGHT_STATUS=%s\nNOTION_PAGE_HTTP=%s\nNOTION_CHILDREN_HTTP=%s\nNOTION_BLOCK_COUNT=%s' "$JOB_STATUS" "${PAGE_HTTP:-}" "${CHILDREN_HTTP:-}" "${BLOCK_COUNT:-}")
+          python - "$body" <<'PY' >/tmp/comment.json
+          import json, sys
+          print(json.dumps({'body': sys.argv[1]}))
+          PY
+          curl --fail-with-body --silent --show-error -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${REPOSITORY}/issues/${ISSUE_NUMBER}/comments" \
+            --data-binary @/tmp/comment.json
