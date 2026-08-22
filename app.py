@@ -74,11 +74,12 @@ _DEFAULT_ALLOWED_ORIGINS = (
     "capacitor://localhost",
 )
 _configured_origins = os.environ.get("CUSTOMER_AI_ALLOWED_ORIGINS", "").strip()
-_origins = (
-    [origin.strip() for origin in _configured_origins.split(",") if origin.strip()]
-    if _configured_origins
-    else list(_DEFAULT_ALLOWED_ORIGINS)
-)
+_extra_origins = [
+    origin.strip()
+    for origin in _configured_origins.split(",")
+    if origin.strip()
+]
+_origins = list(dict.fromkeys([*_DEFAULT_ALLOWED_ORIGINS, *_extra_origins]))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,
