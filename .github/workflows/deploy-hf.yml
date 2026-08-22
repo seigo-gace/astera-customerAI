@@ -13,7 +13,7 @@ on:
       - .github/workflows/deploy-hf.yml
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: deploy-current-hf-space
@@ -105,6 +105,7 @@ jobs:
           if unexpected or missing:
               raise SystemExit(f"HF_space_file_mismatch unexpected={unexpected} missing={missing}")
 
+          Path("hf-deploy-commit.txt").write_text(str(commit.oid), encoding="utf-8")
           print(f"hf_commit={commit.oid}")
           print(f"source_sha={os.environ['SOURCE_SHA']}")
           print(f"files={len(remote)}")
@@ -143,11 +144,15 @@ jobs:
           PY
 
       - name: Verify staging browser CORS and Customer AI response
+        env:
+          SOURCE_SHA: ${{ github.sha }}
         run: |
           python - <<'PY'
           import json
           import os
           import urllib.request
+          from datetime import datetime, timezone
+          from pathlib import Path
 
           base = os.environ["HF_SPACE_URL"].rstrip("/")
           origin = "https://staging.asterav8.jp"
@@ -167,6 +172,7 @@ jobs:
                   raise SystemExit(
                       f"staging_cors_failed status={response.status} allow_origin={allow_origin!r}"
                   )
+              preflight_status = response.status
 
           payload = json.dumps({
               "message": "料金を教えて",
@@ -196,9 +202,34 @@ jobs:
                   raise SystemExit(
                       f"staging_respond_failed status={response.status} allow_origin={allow_origin!r} body={body!r}"
                   )
-              print(json.dumps({
-                  "staging_cors": "ok",
-                  "staging_respond": "ok",
-                  "answer_preview": answer[:120],
-              }, ensure_ascii=False))
+              respond_status = response.status
+
+          evidence = {
+              "verified_at": datetime.now(timezone.utc).isoformat(),
+              "source_sha": os.environ["SOURCE_SHA"],
+              "hf_commit": Path("hf-deploy-commit.txt").read_text(encoding="utf-8").strip(),
+              "space_url": base,
+              "origin": origin,
+              "preflight_status": preflight_status,
+              "allow_origin": allow_origin,
+              "respond_status": respond_status,
+              "respond_has_answer": bool(answer),
+              "answer_preview": answer[:160],
+              "status": "success",
+          }
+          Path("deployment-evidence/staging-app-customer-ai-live.json").write_text(
+              json.dumps(evidence, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(evidence, ensure_ascii=False))
           PY
+
+      - name: Commit live staging verification evidence
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add deployment-evidence/staging-app-customer-ai-live.json
+          git commit -m "Record staging Customer AI live verification for ${SOURCE_SHA}" || exit 0
+          git push origin HEAD:main
