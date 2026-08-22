@@ -13,12 +13,9 @@ from typing import Any
 import httpx
 from huggingface_hub import HfApi, HfFileSystem, Volume, bucket_info
 
-from runtime.kb_bucket import (
-    HF_KB_ACTIVE_POINTER_DEFAULT,
-    HF_KB_BUCKET_DEFAULT,
-    HF_KB_MOUNT_DEFAULT,
-)
-
+HF_KB_BUCKET_DEFAULT = "G-ACE/astera-customerai-kb"
+HF_KB_MOUNT_DEFAULT = "/data/customer-ai"
+HF_KB_ACTIVE_POINTER_DEFAULT = "active.json"
 SPACE_ID_DEFAULT = "G-ACE/astera-customerAI"
 SPACE_URL_DEFAULT = "https://g-ace-astera-customerai.hf.space"
 REQUIRED_REPO_FILES = (
@@ -131,11 +128,17 @@ def _read_active_pointer(*, token: str, bucket: dict[str, str]) -> dict[str, obj
             f"actual={payload.get('build_id')!r}"
         )
     canonical_path = str(payload.get("canonical_path") or "").strip()
+    manifest_path = str(payload.get("manifest_path") or "").strip()
     if not canonical_path:
         raise SystemExit("kb_active_canonical_path_missing")
-    canonical_uri = f"hf://buckets/{bucket['bucket_id']}/{canonical_path}"
-    if not fs.exists(canonical_uri):
-        raise SystemExit("kb_active_canonical_remote_missing")
+    if not manifest_path:
+        raise SystemExit("kb_active_manifest_path_missing")
+    for path, blocker in (
+        (canonical_path, "kb_active_canonical_remote_missing"),
+        (manifest_path, "kb_active_manifest_remote_missing"),
+    ):
+        if not fs.exists(f"hf://buckets/{bucket['bucket_id']}/{path}"):
+            raise SystemExit(blocker)
     return payload
 
 
@@ -169,6 +172,7 @@ def _mount_kb_bucket(api: HfApi, *, space_id: str, bucket: dict[str, str]) -> No
         if getattr(volume, "type", None) == "bucket"
         and getattr(volume, "source", None) == bucket["bucket_id"]
         and getattr(volume, "mount_path", None) == bucket["mount_path"]
+        and getattr(volume, "read_only", None) is True
     ]
     if len(matched) != 1:
         raise SystemExit("kb_bucket_volume_readback_failed")
