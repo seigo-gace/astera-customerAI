@@ -1,0 +1,175 @@
+name: customer-ai-cors-hotfix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - app.py
+      - .github/workflows/deploy-cors-hotfix.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: customer-ai-cors-hotfix
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN || secrets.HF_KEY }}
+      HF_SPACE_ID: G-ACE/astera-customerAI
+      HF_SPACE_URL: https://g-ace-astera-customerai.hf.space
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Verify CORS source contract
+        run: |
+          python -m py_compile app.py
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('app.py').read_text(encoding='utf-8')
+          required = [
+              'https://asterav8.jp',
+              'https://staging.asterav8.jp',
+              'https://open.asterav8.jp',
+              'https://localhost',
+              'capacitor://localhost',
+              '_merge_allowed_origins',
+          ]
+          missing = [item for item in required if item not in text]
+          if missing:
+              raise SystemExit(f'cors_source_contract_missing={missing}')
+          PY
+
+      - name: Install Hugging Face client
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade 'huggingface_hub>=1.24.0'
+
+      - name: Push current app.py to existing Customer AI Space
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from huggingface_hub import HfApi
+
+          token = os.environ.get('HF_TOKEN', '').strip()
+          if not token:
+              raise SystemExit('HF_TOKEN_or_HF_KEY_missing')
+
+          api = HfApi(token=token)
+          commit = api.upload_file(
+              repo_id=os.environ['HF_SPACE_ID'],
+              repo_type='space',
+              path_or_fileobj='app.py',
+              path_in_repo='app.py',
+              commit_message=f"Deploy staging CORS hotfix {os.environ['SOURCE_SHA']}",
+          )
+          Path('hf-hotfix-commit.txt').write_text(str(commit.oid), encoding='utf-8')
+          print(f'hf_commit={commit.oid}')
+          PY
+
+      - name: Verify live staging browser boundary
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          base = os.environ['HF_SPACE_URL'].rstrip('/')
+          origin = 'https://staging.asterav8.jp'
+
+          last = None
+          for _ in range(36):
+              try:
+                  req = urllib.request.Request(
+                      base + '/respond',
+                      method='OPTIONS',
+                      headers={
+                          'Origin': origin,
+                          'Access-Control-Request-Method': 'POST',
+                          'Access-Control-Request-Headers': 'content-type',
+                      },
+                  )
+                  with urllib.request.urlopen(req, timeout=15) as response:
+                      allow_origin = response.headers.get('Access-Control-Allow-Origin')
+                      last = {'status': response.status, 'allow_origin': allow_origin}
+                      if response.status == 200 and allow_origin == origin:
+                          break
+              except Exception as exc:
+                  last = repr(exc)
+              time.sleep(10)
+          else:
+              raise SystemExit(f'staging_cors_not_live last={last!r}')
+
+          payload = json.dumps({
+              'message': '料金を教えて',
+              'source': 'astera-app',
+              'locale': 'ja-JP',
+              'session_id': 'session_staging_hotfix_gate',
+              'message_id': 'message_staging_hotfix_gate',
+              'response_mode': 'auto',
+              'mode_source': 'auto',
+              'current_path': '/app/new',
+          }).encode('utf-8')
+          request = urllib.request.Request(
+              base + '/respond',
+              data=payload,
+              method='POST',
+              headers={
+                  'Origin': origin,
+                  'Content-Type': 'application/json',
+                  'Accept': 'application/json',
+              },
+          )
+          with urllib.request.urlopen(request, timeout=60) as response:
+              body = json.loads(response.read().decode('utf-8'))
+              allow_origin = response.headers.get('Access-Control-Allow-Origin')
+              answer = str(body.get('answer') or body.get('clarification') or '').strip()
+              if response.status != 200 or allow_origin != origin or not answer:
+                  raise SystemExit(
+                      f"staging_respond_failed status={response.status} allow_origin={allow_origin!r} body={body!r}"
+                  )
+
+          evidence = {
+              'verified_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ['SOURCE_SHA'],
+              'hf_commit': Path('hf-hotfix-commit.txt').read_text(encoding='utf-8').strip(),
+              'origin': origin,
+              'preflight_status': 200,
+              'allow_origin': allow_origin,
+              'respond_status': 200,
+              'respond_has_answer': True,
+              'answer_preview': answer[:160],
+              'status': 'success',
+          }
+          Path('deployment-evidence/staging-app-customer-ai-live.json').write_text(
+              json.dumps(evidence, ensure_ascii=False, indent=2) + '\n',
+              encoding='utf-8',
+          )
+          print(json.dumps(evidence, ensure_ascii=False))
+          PY
+
+      - name: Record successful live verification
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add deployment-evidence/staging-app-customer-ai-live.json
+          git commit -m 'Record staging Customer AI live connection' || exit 0
+          git push origin HEAD:main
