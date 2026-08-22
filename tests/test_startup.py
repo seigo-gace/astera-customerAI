@@ -6,9 +6,9 @@ from runtime.service import CustomerAIWork
 from runtime.startup import RuntimeNotReady, create_work_from_environment
 
 
-def _write_kb(tmp_path):
-    kb = tmp_path / "kb.jsonl"
-    kb.write_text(
+def _write_kb(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
         json.dumps(
             {
                 "fact_id": "f1",
@@ -25,7 +25,26 @@ def _write_kb(tmp_path):
         + "\n",
         encoding="utf-8",
     )
-    return kb
+    return path
+
+
+def _write_mounted_release(tmp_path, build_id="kb-test"):
+    canonical = _write_kb(tmp_path / "releases" / build_id / "canonical.jsonl")
+    (tmp_path / "active.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "build_id": build_id,
+                "canonical_path": f"releases/{build_id}/canonical.jsonl",
+                "current_facts_path": None,
+                "aliases_path": None,
+                "manifest_path": f"releases/{build_id}/manifest.json",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return canonical
 
 
 def test_local_injected_runtime_fails_closed_until_kb_snapshot_exists(tmp_path):
@@ -37,7 +56,7 @@ def test_local_injected_runtime_fails_closed_until_kb_snapshot_exists(tmp_path):
 
 
 def test_local_injected_runtime_builds_with_explicit_snapshot(tmp_path):
-    kb = _write_kb(tmp_path)
+    kb = _write_kb(tmp_path / "kb.jsonl")
     work = create_work_from_environment(
         {
             "CUSTOMER_AI_KB_SNAPSHOT_PATH": str(kb),
@@ -51,7 +70,7 @@ def test_local_injected_runtime_builds_with_explicit_snapshot(tmp_path):
 
 
 def test_local_optional_current_fact_path_is_validated(tmp_path):
-    kb = _write_kb(tmp_path)
+    kb = _write_kb(tmp_path / "kb.jsonl")
     with pytest.raises(RuntimeNotReady, match="current_facts_missing"):
         create_work_from_environment(
             {
@@ -62,57 +81,64 @@ def test_local_optional_current_fact_path_is_validated(tmp_path):
         )
 
 
-def test_production_requires_hf_token_before_private_bucket_access():
-    with pytest.raises(RuntimeNotReady, match="hf_token_missing"):
-        create_work_from_environment({})
-
-
-def test_production_requires_pinned_private_bucket_revision():
-    with pytest.raises(RuntimeNotReady, match="kb_bucket_revision_missing"):
+def test_production_requires_expected_build_id():
+    with pytest.raises(RuntimeNotReady, match="kb_build_id_missing"):
         create_work_from_environment({"HF_TOKEN": "test-token"})
 
 
-def test_production_downloads_private_bucket_not_local_snapshot(tmp_path, monkeypatch):
-    kb = _write_kb(tmp_path)
-    calls = []
+def test_production_requires_storage_bucket_mount(tmp_path):
+    with pytest.raises(RuntimeNotReady, match="kb_bucket_mount_missing"):
+        create_work_from_environment(
+            {
+                "HF_TOKEN": "test-token",
+                "CUSTOMER_AI_KB_BUILD_ID": "kb-test",
+                "CUSTOMER_AI_KB_MOUNT_PATH": str(tmp_path / "missing"),
+            }
+        )
 
-    def fake_download(*, repo_id, revision, filename, token):
-        calls.append((repo_id, revision, filename, token))
-        return kb
 
-    monkeypatch.setattr("runtime.startup.download_private_bucket_file", fake_download)
+def test_production_uses_mounted_storage_bucket_not_local_snapshot(tmp_path):
+    mount = tmp_path / "mounted-bucket"
+    mount.mkdir()
+    _write_mounted_release(mount, build_id="kb-test")
 
     work = create_work_from_environment(
         {
             "HF_TOKEN": "test-token",
-            "CUSTOMER_AI_KB_REPO_ID": "G-ACE/astera-customerai-kb",
-            "CUSTOMER_AI_KB_REVISION": "bucket-revision",
-            "CUSTOMER_AI_KB_CANONICAL_FILE": "canonical.jsonl",
+            "CUSTOMER_AI_KB_BUILD_ID": "kb-test",
+            "CUSTOMER_AI_KB_MOUNT_PATH": str(mount),
             "CUSTOMER_AI_KB_SNAPSHOT_PATH": str(tmp_path / "must-not-be-used.jsonl"),
         }
     )
 
     assert isinstance(work, CustomerAIWork)
-    assert work.core.grounding.canonical.generation_id == "bucket-revision"
-    assert calls == [
-        (
-            "G-ACE/astera-customerai-kb",
-            "bucket-revision",
-            "canonical.jsonl",
-            "test-token",
-        )
-    ]
+    assert work.core.grounding.canonical.generation_id == "kb-test"
 
 
-def test_production_bucket_download_failure_is_fail_closed(monkeypatch):
-    def broken_download(**_):
-        raise RuntimeError("not found")
+def test_production_rejects_active_pointer_build_mismatch(tmp_path):
+    mount = tmp_path / "mounted-bucket"
+    mount.mkdir()
+    _write_mounted_release(mount, build_id="kb-actual")
 
-    monkeypatch.setattr("runtime.startup.download_private_bucket_file", broken_download)
-    with pytest.raises(RuntimeNotReady, match="kb_bucket_canonical_download_failed"):
+    with pytest.raises(RuntimeNotReady, match="kb_active_build_id_mismatch"):
         create_work_from_environment(
             {
                 "HF_TOKEN": "test-token",
-                "CUSTOMER_AI_KB_REVISION": "bucket-revision",
+                "CUSTOMER_AI_KB_BUILD_ID": "kb-expected",
+                "CUSTOMER_AI_KB_MOUNT_PATH": str(mount),
+            }
+        )
+
+
+def test_production_requires_model_token_after_bucket_is_valid(tmp_path):
+    mount = tmp_path / "mounted-bucket"
+    mount.mkdir()
+    _write_mounted_release(mount, build_id="kb-test")
+
+    with pytest.raises(RuntimeNotReady, match="hf_token_missing"):
+        create_work_from_environment(
+            {
+                "CUSTOMER_AI_KB_BUILD_ID": "kb-test",
+                "CUSTOMER_AI_KB_MOUNT_PATH": str(mount),
             }
         )
