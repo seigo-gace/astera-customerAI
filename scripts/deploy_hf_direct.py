@@ -63,25 +63,6 @@ def _validate_bucket_config() -> dict[str, str]:
     }
 
 
-def _validate_trained_model_config() -> dict[str, str]:
-    from runtime.hf_client import HF_MODEL_4B, HF_MODEL_8B
-
-    config = {
-        "model_4b_id": _required_env("CUSTOMER_AI_MODEL_4B_ID"),
-        "model_4b_revision": _required_env("CUSTOMER_AI_MODEL_4B_REVISION"),
-        "model_4b_api_url": _required_env("CUSTOMER_AI_MODEL_4B_API_URL"),
-        "model_8b_id": _required_env("CUSTOMER_AI_MODEL_8B_ID"),
-        "model_8b_revision": _required_env("CUSTOMER_AI_MODEL_8B_REVISION"),
-        "model_8b_api_url": _required_env("CUSTOMER_AI_MODEL_8B_API_URL"),
-    }
-    if config["model_4b_id"] == HF_MODEL_4B or config["model_8b_id"] == HF_MODEL_8B:
-        raise SystemExit("trained_domain_model_required_no_base_model_fallback")
-    for key in ("model_4b_api_url", "model_8b_api_url"):
-        if not config[key].startswith("https://"):
-            raise SystemExit(f"{key}_must_be_https")
-    return config
-
-
 def _space_readme(root: Path) -> str:
     body = (root / "README.md").read_text(encoding="utf-8") if (root / "README.md").is_file() else ""
     return (
@@ -94,12 +75,7 @@ def _space_readme(root: Path) -> str:
     )
 
 
-def _stage_payload(
-    root: Path,
-    stage: Path,
-    bucket: dict[str, str],
-    trained_models: dict[str, str],
-) -> dict[str, Any]:
+def _stage_payload(root: Path, stage: Path, bucket: dict[str, str]) -> dict[str, Any]:
     for name in REQUIRED_REPO_FILES:
         shutil.copy2(root / name, stage / name)
     for name in REQUIRED_REPO_DIRS:
@@ -117,11 +93,6 @@ def _stage_payload(
         "kb_current_file": bucket["current_file"] or None,
         "kb_alias_file": bucket["alias_file"] or None,
         "kb_embedded_in_space": False,
-        "trained_model_4b_id": trained_models["model_4b_id"],
-        "trained_model_4b_revision": trained_models["model_4b_revision"],
-        "trained_model_8b_id": trained_models["model_8b_id"],
-        "trained_model_8b_revision": trained_models["model_8b_revision"],
-        "private_endpoint_urls_persisted": False,
         "deployment_path": "direct_hf_hub_no_github_actions",
     }
     (stage / "deployment-manifest.json").write_text(
@@ -145,7 +116,6 @@ def _sync_runtime_config(
     space_id: str,
     runtime_token: str,
     bucket: dict[str, str],
-    trained_models: dict[str, str],
 ) -> None:
     existing_secrets = api.get_space_secrets(space_id)
     if runtime_token:
@@ -165,12 +135,6 @@ def _sync_runtime_config(
         "CUSTOMER_AI_KB_REPO_ID": bucket["repo_id"],
         "CUSTOMER_AI_KB_REVISION": bucket["revision"],
         "CUSTOMER_AI_KB_CANONICAL_FILE": bucket["canonical_file"],
-        "CUSTOMER_AI_MODEL_4B_ID": trained_models["model_4b_id"],
-        "CUSTOMER_AI_MODEL_4B_REVISION": trained_models["model_4b_revision"],
-        "CUSTOMER_AI_MODEL_4B_API_URL": trained_models["model_4b_api_url"],
-        "CUSTOMER_AI_MODEL_8B_ID": trained_models["model_8b_id"],
-        "CUSTOMER_AI_MODEL_8B_REVISION": trained_models["model_8b_revision"],
-        "CUSTOMER_AI_MODEL_8B_API_URL": trained_models["model_8b_api_url"],
     }
     for key, value in variables.items():
         api.add_space_variable(space_id, key=key, value=value)
@@ -282,11 +246,10 @@ def main() -> int:
 
     _validate_repo(root)
     bucket = _validate_bucket_config()
-    trained_models = _validate_trained_model_config()
 
     with tempfile.TemporaryDirectory(prefix="astera-customerai-hf-") as tmp:
         stage = Path(tmp)
-        manifest = _stage_payload(root, stage, bucket, trained_models)
+        manifest = _stage_payload(root, stage, bucket)
         expected = _expected_files(stage)
         if any(path.startswith("kb/") for path in expected):
             raise SystemExit("embedded_kb_payload_forbidden")
@@ -315,7 +278,6 @@ def main() -> int:
             space_id=args.space_id,
             runtime_token=runtime_token,
             bucket=bucket,
-            trained_models=trained_models,
         )
 
         info = api.repo_info(repo_id=args.space_id, repo_type="space")
@@ -359,10 +321,6 @@ def main() -> int:
             "kb_repo_id": bucket["repo_id"],
             "kb_revision": bucket["revision"],
             "kb_embedded_in_space": False,
-            "trained_model_4b_id": manifest["trained_model_4b_id"],
-            "trained_model_4b_revision": manifest["trained_model_4b_revision"],
-            "trained_model_8b_id": manifest["trained_model_8b_id"],
-            "trained_model_8b_revision": manifest["trained_model_8b_revision"],
             "space_stage": runtime.stage,
             **http_evidence,
         }
