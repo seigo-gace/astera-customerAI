@@ -1,37 +1,89 @@
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from pathlib import Path
 
-from huggingface_hub import hf_hub_download
-
 HF_KB_BUCKET_DEFAULT = "G-ACE/astera-customerai-kb"
-HF_KB_FILE_DEFAULT = "canonical.jsonl"
+HF_KB_MOUNT_DEFAULT = "/data/customer-ai"
+HF_KB_ACTIVE_POINTER_DEFAULT = "active.json"
 
 
-def download_private_bucket_file(
+@dataclass(frozen=True)
+class MountedKBRelease:
+    build_id: str
+    canonical_path: Path
+    current_facts_path: Path | None
+    aliases_path: Path | None
+
+
+def _resolve_file_inside_mount(mount: Path, relative_path: str, code: str) -> Path:
+    relative = relative_path.strip()
+    if not relative:
+        raise ValueError(code)
+    mount_resolved = mount.resolve()
+    candidate = (mount_resolved / relative).resolve()
+    if candidate != mount_resolved and mount_resolved not in candidate.parents:
+        raise ValueError("kb_pointer_path_escape")
+    if not candidate.is_file() or candidate.stat().st_size == 0:
+        raise ValueError(code)
+    return candidate
+
+
+def load_mounted_kb_release(
     *,
-    repo_id: str,
-    revision: str,
-    filename: str,
-    token: str,
-) -> Path:
-    if not repo_id.strip():
-        raise ValueError("kb_bucket_repo_id_required")
-    if not revision.strip():
-        raise ValueError("kb_bucket_revision_required")
-    if not filename.strip():
-        raise ValueError("kb_bucket_filename_required")
-    if not token.strip():
-        raise ValueError("hf_token_required")
+    mount_path: str,
+    expected_build_id: str,
+    pointer_name: str = HF_KB_ACTIVE_POINTER_DEFAULT,
+) -> MountedKBRelease:
+    mount = Path(mount_path).expanduser()
+    if not mount.is_dir():
+        raise ValueError("kb_bucket_mount_missing")
 
-    path = hf_hub_download(
-        repo_id=repo_id.strip(),
-        repo_type="dataset",
-        revision=revision.strip(),
-        filename=filename.strip(),
-        token=token.strip(),
+    pointer = _resolve_file_inside_mount(
+        mount,
+        pointer_name,
+        "kb_active_pointer_missing",
     )
-    resolved = Path(path)
-    if not resolved.is_file() or resolved.stat().st_size == 0:
-        raise ValueError("kb_bucket_download_invalid")
-    return resolved
+    try:
+        payload = json.loads(pointer.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("kb_active_pointer_invalid") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("kb_active_pointer_invalid")
+
+    build_id = str(payload.get("build_id") or "").strip()
+    if not build_id:
+        raise ValueError("kb_active_build_id_missing")
+    expected = expected_build_id.strip()
+    if not expected:
+        raise ValueError("kb_expected_build_id_missing")
+    if build_id != expected:
+        raise ValueError("kb_active_build_id_mismatch")
+
+    canonical_path = _resolve_file_inside_mount(
+        mount,
+        str(payload.get("canonical_path") or ""),
+        "kb_active_canonical_missing",
+    )
+
+    current_value = str(payload.get("current_facts_path") or "").strip()
+    current_facts_path = (
+        _resolve_file_inside_mount(mount, current_value, "kb_active_current_missing")
+        if current_value
+        else None
+    )
+
+    aliases_value = str(payload.get("aliases_path") or "").strip()
+    aliases_path = (
+        _resolve_file_inside_mount(mount, aliases_value, "kb_active_aliases_missing")
+        if aliases_value
+        else None
+    )
+
+    return MountedKBRelease(
+        build_id=build_id,
+        canonical_path=canonical_path,
+        current_facts_path=current_facts_path,
+        aliases_path=aliases_path,
+    )
