@@ -7,16 +7,12 @@ import httpx
 
 HF_MODEL_4B = "Qwen/Qwen3-4B"
 HF_MODEL_8B = "Qwen/Qwen3-8B"
+HF_ALLOWED_MODELS = frozenset({HF_MODEL_4B, HF_MODEL_8B})
 HF_CHAT_API = "https://router.huggingface.co/v1/chat/completions"
 
 
 class HFChatClient:
-    """Role-scoped OpenAI-compatible Hugging Face chat client.
-
-    Production may point at a protected Hugging Face Inference Endpoint backed by
-    a private trained Customer AI model. The model id is therefore not restricted
-    to the public base Qwen ids here; production readiness is enforced by startup.
-    """
+    """Role-scoped Hugging Face chat client. Multiple role clients may share one HTTP pool."""
 
     def __init__(
         self,
@@ -27,14 +23,12 @@ class HFChatClient:
         timeout_seconds: float = 30.0,
         client: httpx.AsyncClient | None = None,
     ):
-        if not model_id.strip():
-            raise ValueError("model_id_required")
-        if not api_url.strip():
-            raise ValueError("model_api_url_required")
+        if model_id not in HF_ALLOWED_MODELS:
+            raise ValueError(f"model_drift:{model_id}")
         if not token.strip() and client is None:
             raise ValueError("hf_token_required")
-        self.model_id = model_id.strip()
-        self.api_url = api_url.strip()
+        self.model_id = model_id
+        self.api_url = api_url
         self._token = token.strip()
         self._owned = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout_seconds)
