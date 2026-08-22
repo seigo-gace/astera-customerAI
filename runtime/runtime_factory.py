@@ -32,7 +32,9 @@ class InternalRuntimeDependencies:
     constructive_model_id: str = HF_MODEL_4B
     adversarial_model_id: str = HF_MODEL_4B
     evidence_model_id: str = HF_MODEL_8B
-    hf_api_url: str = HF_CHAT_API
+    constructive_api_url: str = HF_CHAT_API
+    adversarial_api_url: str = HF_CHAT_API
+    evidence_api_url: str = HF_CHAT_API
     timeout_seconds: float = 30.0
 
 
@@ -50,12 +52,6 @@ def _canonical_store(deps: InternalRuntimeDependencies):
 def _role_pool(deps: InternalRuntimeDependencies):
     if deps.role_pool is not None:
         return deps.role_pool
-    if deps.constructive_model_id != HF_MODEL_4B:
-        raise ValueError("constructive_model_drift")
-    if deps.adversarial_model_id != HF_MODEL_4B:
-        raise ValueError("adversarial_model_drift")
-    if deps.evidence_model_id != HF_MODEL_8B:
-        raise ValueError("evidence_model_drift")
     token = deps.hf_token or ""
     if not token.strip():
         raise ValueError("hf_token_required")
@@ -64,19 +60,19 @@ def _role_pool(deps: InternalRuntimeDependencies):
         RoleName.CONSTRUCTIVE: HFChatClient(
             token=token,
             model_id=deps.constructive_model_id,
-            api_url=deps.hf_api_url,
+            api_url=deps.constructive_api_url,
             client=shared_http,
         ),
         RoleName.ADVERSARIAL: HFChatClient(
             token=token,
             model_id=deps.adversarial_model_id,
-            api_url=deps.hf_api_url,
+            api_url=deps.adversarial_api_url,
             client=shared_http,
         ),
         RoleName.EVIDENCE_BOUND: HFChatClient(
             token=token,
             model_id=deps.evidence_model_id,
-            api_url=deps.hf_api_url,
+            api_url=deps.evidence_api_url,
             client=shared_http,
         ),
     }
