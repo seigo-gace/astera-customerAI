@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import shutil
@@ -14,6 +13,8 @@ from typing import Any
 import httpx
 from huggingface_hub import HfApi
 
+from runtime.kb_bucket import HF_KB_BUCKET_DEFAULT, HF_KB_FILE_DEFAULT
+
 SPACE_ID_DEFAULT = "G-ACE/astera-customerAI"
 SPACE_URL_DEFAULT = "https://g-ace-astera-customerai.hf.space"
 REQUIRED_REPO_FILES = (
@@ -24,14 +25,6 @@ REQUIRED_REPO_FILES = (
     ".dockerignore",
 )
 REQUIRED_REPO_DIRS = ("config", "runtime")
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _git_head(root: Path) -> str:
@@ -53,56 +46,21 @@ def _validate_repo(root: Path) -> None:
         raise SystemExit(f"repository_payload_missing={missing}")
 
 
-def _validate_kb(snapshot: Path, generation_id: str) -> None:
-    if not snapshot.is_file():
-        raise SystemExit(f"kb_snapshot_missing={snapshot}")
-    if snapshot.stat().st_size == 0:
-        raise SystemExit("kb_snapshot_empty")
-    try:
-        from runtime.kb_search import LocalHybridKnowledgeStore
-
-        LocalHybridKnowledgeStore.from_jsonl(
-            str(snapshot),
-            generation_id=generation_id,
-        )
-    except Exception as exc:
-        raise SystemExit(f"kb_snapshot_runtime_invalid={type(exc).__name__}:{exc}") from exc
-
-
-def _validate_current_facts(path: Path | None, generation_id: str) -> None:
-    if path is None:
-        return
-    if not path.is_file():
-        raise SystemExit(f"current_facts_missing={path}")
-    try:
-        from runtime.live_state import HybridLiveStateProvider
-
-        HybridLiveStateProvider.from_jsonl(
-            path,
-            generation_id=f"{generation_id}:current",
-        )
-    except Exception as exc:
-        raise SystemExit(f"current_facts_runtime_invalid={type(exc).__name__}:{exc}") from exc
-
-
-def _validate_alias_registry(path: Path | None) -> None:
-    if path is None:
-        return
-    if not path.is_file():
-        raise SystemExit(f"alias_registry_missing={path}")
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise SystemExit("alias_registry_invalid_json") from exc
-    if not isinstance(raw, dict):
-        raise SystemExit("alias_registry_invalid_shape")
-
-
 def _required_env(key: str) -> str:
     value = os.environ.get(key, "").strip()
     if not value:
         raise SystemExit(f"{key}_missing")
     return value
+
+
+def _validate_bucket_config() -> dict[str, str]:
+    return {
+        "repo_id": os.environ.get("CUSTOMER_AI_KB_REPO_ID", "").strip() or HF_KB_BUCKET_DEFAULT,
+        "revision": _required_env("CUSTOMER_AI_KB_REVISION"),
+        "canonical_file": os.environ.get("CUSTOMER_AI_KB_CANONICAL_FILE", "").strip() or HF_KB_FILE_DEFAULT,
+        "current_file": os.environ.get("CUSTOMER_AI_KB_CURRENT_FILE", "").strip(),
+        "alias_file": os.environ.get("CUSTOMER_AI_KB_ALIAS_FILE", "").strip(),
+    }
 
 
 def _validate_trained_model_config() -> dict[str, str]:
@@ -139,46 +97,26 @@ def _space_readme(root: Path) -> str:
 def _stage_payload(
     root: Path,
     stage: Path,
-    kb_snapshot: Path,
-    current_facts: Path | None,
-    alias_registry: Path | None,
-    generation_id: str,
+    bucket: dict[str, str],
     trained_models: dict[str, str],
 ) -> dict[str, Any]:
-    for name in ("app.py", "requirements.txt", "pyproject.toml", ".dockerignore"):
+    for name in REQUIRED_REPO_FILES:
         shutil.copy2(root / name, stage / name)
     for name in REQUIRED_REPO_DIRS:
         shutil.copytree(root / name, stage / name)
-
-    kb_dir = stage / "kb"
-    kb_dir.mkdir()
-    shutil.copy2(kb_snapshot, kb_dir / "canonical.jsonl")
-    if current_facts is not None:
-        shutil.copy2(current_facts, kb_dir / "current-facts.jsonl")
-    if alias_registry is not None:
-        shutil.copy2(alias_registry, kb_dir / "aliases.json")
-
-    dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
-    marker = 'CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]'
-    if marker not in dockerfile:
-        raise SystemExit("dockerfile_cmd_contract_missing")
-    dockerfile = dockerfile.replace(
-        marker,
-        "COPY kb /app/kb\n\n" + marker,
-        1,
-    )
-    (stage / "Dockerfile").write_text(dockerfile, encoding="utf-8")
     (stage / "README.md").write_text(_space_readme(root), encoding="utf-8")
 
     manifest: dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "source_sha": _git_head(root),
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "kb_generation_id": generation_id,
-        "kb_snapshot_sha256": _sha256(kb_snapshot),
-        "kb_snapshot_bytes": kb_snapshot.stat().st_size,
-        "current_facts_sha256": _sha256(current_facts) if current_facts else None,
-        "alias_registry_sha256": _sha256(alias_registry) if alias_registry else None,
+        "kb_storage": "private_hf_dataset_bucket",
+        "kb_repo_id": bucket["repo_id"],
+        "kb_revision": bucket["revision"],
+        "kb_canonical_file": bucket["canonical_file"],
+        "kb_current_file": bucket["current_file"] or None,
+        "kb_alias_file": bucket["alias_file"] or None,
+        "kb_embedded_in_space": False,
         "trained_model_4b_id": trained_models["model_4b_id"],
         "trained_model_4b_revision": trained_models["model_4b_revision"],
         "trained_model_8b_id": trained_models["model_8b_id"],
@@ -206,9 +144,7 @@ def _sync_runtime_config(
     *,
     space_id: str,
     runtime_token: str,
-    has_current_facts: bool,
-    has_alias_registry: bool,
-    generation_id: str,
+    bucket: dict[str, str],
     trained_models: dict[str, str],
 ) -> None:
     existing_secrets = api.get_space_secrets(space_id)
@@ -217,7 +153,7 @@ def _sync_runtime_config(
             space_id,
             key="HF_TOKEN",
             value=runtime_token,
-            description="Customer AI private trained-model inference token",
+            description="Customer AI private KB/model access token",
         )
     elif "HF_TOKEN" not in existing_secrets and "HF_KEY" not in existing_secrets:
         raise SystemExit(
@@ -226,8 +162,9 @@ def _sync_runtime_config(
         )
 
     variables = {
-        "CUSTOMER_AI_KB_SNAPSHOT_PATH": "/app/kb/canonical.jsonl",
-        "CUSTOMER_AI_KB_GENERATION_ID": generation_id,
+        "CUSTOMER_AI_KB_REPO_ID": bucket["repo_id"],
+        "CUSTOMER_AI_KB_REVISION": bucket["revision"],
+        "CUSTOMER_AI_KB_CANONICAL_FILE": bucket["canonical_file"],
         "CUSTOMER_AI_MODEL_4B_ID": trained_models["model_4b_id"],
         "CUSTOMER_AI_MODEL_4B_REVISION": trained_models["model_4b_revision"],
         "CUSTOMER_AI_MODEL_4B_API_URL": trained_models["model_4b_api_url"],
@@ -238,26 +175,26 @@ def _sync_runtime_config(
     for key, value in variables.items():
         api.add_space_variable(space_id, key=key, value=value)
 
-    if has_current_facts:
-        api.add_space_variable(
-            space_id,
-            key="CUSTOMER_AI_CURRENT_FACTS_PATH",
-            value="/app/kb/current-facts.jsonl",
-        )
-    else:
+    optional_variables = {
+        "CUSTOMER_AI_KB_CURRENT_FILE": bucket["current_file"],
+        "CUSTOMER_AI_KB_ALIAS_FILE": bucket["alias_file"],
+    }
+    for key, value in optional_variables.items():
+        if value:
+            api.add_space_variable(space_id, key=key, value=value)
+        else:
+            try:
+                api.delete_space_variable(space_id, key=key)
+            except Exception:
+                pass
+
+    for legacy_key in (
+        "CUSTOMER_AI_KB_SNAPSHOT_PATH",
+        "CUSTOMER_AI_CURRENT_FACTS_PATH",
+        "CUSTOMER_AI_ALIAS_REGISTRY_PATH",
+    ):
         try:
-            api.delete_space_variable(space_id, key="CUSTOMER_AI_CURRENT_FACTS_PATH")
-        except Exception:
-            pass
-    if has_alias_registry:
-        api.add_space_variable(
-            space_id,
-            key="CUSTOMER_AI_ALIAS_REGISTRY_PATH",
-            value="/app/kb/aliases.json",
-        )
-    else:
-        try:
-            api.delete_space_variable(space_id, key="CUSTOMER_AI_ALIAS_REGISTRY_PATH")
+            api.delete_space_variable(space_id, key=legacy_key)
         except Exception:
             pass
 
@@ -329,10 +266,6 @@ def main() -> int:
     parser.add_argument("--repo-root", default=".")
     parser.add_argument("--space-id", default=os.environ.get("HF_SPACE_ID", SPACE_ID_DEFAULT))
     parser.add_argument("--space-url", default=os.environ.get("HF_SPACE_URL", SPACE_URL_DEFAULT))
-    parser.add_argument("--kb-snapshot", required=True)
-    parser.add_argument("--current-facts")
-    parser.add_argument("--alias-registry")
-    parser.add_argument("--generation-id")
     parser.add_argument("--origin", default="https://staging.asterav8.jp")
     parser.add_argument("--wait-timeout", type=float, default=900.0)
     parser.add_argument("--http-timeout", type=float, default=60.0)
@@ -341,37 +274,22 @@ def main() -> int:
     args = parser.parse_args()
 
     root = Path(args.repo_root).resolve()
-    kb_snapshot = Path(args.kb_snapshot).resolve()
-    current_facts = Path(args.current_facts).resolve() if args.current_facts else None
-    alias_registry = Path(args.alias_registry).resolve() if args.alias_registry else None
     deploy_token = os.environ.get("HF_TOKEN", "").strip()
     runtime_token = os.environ.get("CUSTOMER_AI_RUNTIME_HF_TOKEN", "").strip()
 
     if not deploy_token and not args.dry_run:
         raise SystemExit("HF_TOKEN_missing_for_direct_deploy")
 
-    generation_id = (args.generation_id or f"kb-{_sha256(kb_snapshot)[:16]}").strip()
-    if not generation_id:
-        raise SystemExit("generation_id_empty")
-
     _validate_repo(root)
-    _validate_kb(kb_snapshot, generation_id)
-    _validate_current_facts(current_facts, generation_id)
-    _validate_alias_registry(alias_registry)
+    bucket = _validate_bucket_config()
     trained_models = _validate_trained_model_config()
 
     with tempfile.TemporaryDirectory(prefix="astera-customerai-hf-") as tmp:
         stage = Path(tmp)
-        manifest = _stage_payload(
-            root,
-            stage,
-            kb_snapshot,
-            current_facts,
-            alias_registry,
-            generation_id,
-            trained_models,
-        )
+        manifest = _stage_payload(root, stage, bucket, trained_models)
         expected = _expected_files(stage)
+        if any(path.startswith("kb/") for path in expected):
+            raise SystemExit("embedded_kb_payload_forbidden")
         print(json.dumps({"preflight": "ok", "manifest": manifest, "files": sorted(expected)}, ensure_ascii=False))
 
         if args.dry_run:
@@ -382,16 +300,21 @@ def main() -> int:
         if str(who.get("name") or "") != "G-ACE":
             raise SystemExit(f"unexpected_hf_identity={who.get('name')!r}")
 
-        before = api.get_space_runtime(args.space_id)
-        print(json.dumps({"space_stage_before": before.stage, "hardware": before.hardware}, ensure_ascii=False))
+        bucket_info = api.repo_info(
+            repo_id=bucket["repo_id"],
+            repo_type="dataset",
+            revision=bucket["revision"],
+        )
+        if bucket_info.sha != bucket["revision"]:
+            raise SystemExit(
+                f"kb_bucket_revision_mismatch expected={bucket['revision']} actual={bucket_info.sha}"
+            )
 
         _sync_runtime_config(
             api,
             space_id=args.space_id,
             runtime_token=runtime_token,
-            has_current_facts=current_facts is not None,
-            has_alias_registry=alias_registry is not None,
-            generation_id=generation_id,
+            bucket=bucket,
             trained_models=trained_models,
         )
 
@@ -403,15 +326,18 @@ def main() -> int:
             path_in_repo=".",
             delete_patterns=["*", "**/*"],
             parent_commit=info.sha,
-            commit_message=f"Direct deploy Customer AI {manifest['source_sha']} generation {generation_id}",
+            commit_message=f"Direct deploy Customer AI {manifest['source_sha']} KB {bucket['revision']}",
         )
 
         remote = set(api.list_repo_files(repo_id=args.space_id, repo_type="space"))
         remote.discard(".gitattributes")
         unexpected = sorted(remote - expected)
         missing = sorted(expected - remote)
-        if unexpected or missing:
-            raise SystemExit(f"space_file_mismatch unexpected={unexpected} missing={missing}")
+        embedded_kb = sorted(path for path in remote if path.startswith("kb/"))
+        if unexpected or missing or embedded_kb:
+            raise SystemExit(
+                f"space_file_mismatch unexpected={unexpected} missing={missing} embedded_kb={embedded_kb}"
+            )
 
         api.restart_space(
             repo_id=args.space_id,
@@ -423,17 +349,16 @@ def main() -> int:
             poll_interval=5.0,
         )
         if runtime.stage != "RUNNING":
-            raise SystemExit(
-                f"space_not_running stage={runtime.stage!r} hardware={runtime.hardware!r}"
-            )
+            raise SystemExit(f"space_not_running stage={runtime.stage!r} hardware={runtime.hardware!r}")
 
         http_evidence = _verify_http(args.space_url, args.origin, args.http_timeout)
         evidence = {
             "status": "success",
             "hf_commit": str(commit.oid),
             "source_sha": manifest["source_sha"],
-            "kb_generation_id": generation_id,
-            "kb_snapshot_sha256": manifest["kb_snapshot_sha256"],
+            "kb_repo_id": bucket["repo_id"],
+            "kb_revision": bucket["revision"],
+            "kb_embedded_in_space": False,
             "trained_model_4b_id": manifest["trained_model_4b_id"],
             "trained_model_4b_revision": manifest["trained_model_4b_revision"],
             "trained_model_8b_id": manifest["trained_model_8b_id"],
