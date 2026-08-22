@@ -24,9 +24,7 @@ class RuntimeDependencies:
     constructive_model_id: str = HF_MODEL_4B
     adversarial_model_id: str = HF_MODEL_4B
     evidence_model_id: str = HF_MODEL_8B
-    constructive_api_url: str = HF_CHAT_API
-    adversarial_api_url: str = HF_CHAT_API
-    evidence_api_url: str = HF_CHAT_API
+    hf_api_url: str = HF_CHAT_API
     timeout_seconds: float = 30.0
 
 
@@ -53,9 +51,7 @@ def build_work(deps: RuntimeDependencies) -> CustomerAIWork:
             constructive_model_id=deps.constructive_model_id,
             adversarial_model_id=deps.adversarial_model_id,
             evidence_model_id=deps.evidence_model_id,
-            constructive_api_url=deps.constructive_api_url,
-            adversarial_api_url=deps.adversarial_api_url,
-            evidence_api_url=deps.evidence_api_url,
+            hf_api_url=deps.hf_api_url,
             timeout_seconds=deps.timeout_seconds,
         )
     )
