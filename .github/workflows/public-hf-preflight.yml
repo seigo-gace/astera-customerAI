@@ -1,0 +1,113 @@
+name: customer-ai-public-hf-preflight
+
+on:
+  issues:
+    types: [opened, reopened, edited]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  preflight:
+    if: github.actor == 'seigo-gace' && github.event.issue.title == '[hf-preflight] customer-ai'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HF_TOKEN_PRIMARY: ${{ secrets.HF_TOKEN }}
+      HF_TOKEN_FALLBACK: ${{ secrets.HF_KEY }}
+      HF_BUCKET_ID: G-ACE/astera-customerai-kb
+      HF_SPACE_ID: G-ACE/astera-customerAI
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: HF auth and Storage Bucket preflight
+        id: hf
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet --upgrade 'huggingface_hub>=1.24,<2'
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi, bucket_info, create_bucket
+
+          candidates = [
+              ('HF_TOKEN', os.environ.get('HF_TOKEN_PRIMARY','').strip()),
+              ('HF_KEY', os.environ.get('HF_TOKEN_FALLBACK','').strip()),
+          ]
+          selected = None
+          diagnostics = []
+          for label, token in candidates:
+              if not token:
+                  diagnostics.append(f'{label}:missing')
+                  continue
+              try:
+                  info = HfApi(token=token).whoami()
+              except Exception as exc:
+                  diagnostics.append(f'{label}:auth_error:{type(exc).__name__}')
+                  continue
+              name = str(info.get('name') or info.get('fullname') or '')
+              auth = info.get('auth') if isinstance(info.get('auth'), dict) else {}
+              access = auth.get('accessToken') if isinstance(auth.get('accessToken'), dict) else {}
+              role = str(access.get('role') or 'unknown')
+              diagnostics.append(f'{label}:name={name}:role={role}')
+              if name == 'G-ACE':
+                  selected = (label, token, role)
+                  if role.lower() == 'write':
+                      break
+          if selected is None:
+              raise SystemExit('NO_G_ACE_HF_TOKEN_AVAILABLE|' + '|'.join(diagnostics))
+          label, token, role = selected
+          print('::add-mask::' + token)
+          api = HfApi(token=token)
+          bucket_id = os.environ['HF_BUCKET_ID']
+          try:
+              info = bucket_info(bucket_id, token=token)
+              created = False
+          except Exception:
+              create_bucket(bucket_id, private=True, exist_ok=True, token=token)
+              info = bucket_info(bucket_id, token=token)
+              created = True
+          if not bool(info.private):
+              raise SystemExit('HF_BUCKET_NOT_PRIVATE')
+          space = api.repo_info(repo_id=os.environ['HF_SPACE_ID'], repo_type='space')
+          print(f'HF_AUTH_SELECTED={label}')
+          print(f'HF_AUTH_ROLE={role}')
+          print(f'HF_BUCKET_CREATED={int(created)}')
+          print(f'HF_BUCKET_PRIVATE={int(bool(info.private))}')
+          print(f'HF_SPACE_FOUND={int(space is not None)}')
+          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as f:
+              f.write(f'auth={label}\n')
+              f.write(f'role={role}\n')
+              f.write(f'bucket_created={int(created)}\n')
+              f.write(f'bucket_private={int(bool(info.private))}\n')
+              f.write(f'space_found={int(space is not None)}\n')
+          PY
+      - name: Report safe result to issue
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPOSITORY: ${{ github.repository }}
+          JOB_STATUS: ${{ job.status }}
+          AUTH: ${{ steps.hf.outputs.auth }}
+          ROLE: ${{ steps.hf.outputs.role }}
+          BUCKET_CREATED: ${{ steps.hf.outputs.bucket_created }}
+          BUCKET_PRIVATE: ${{ steps.hf.outputs.bucket_private }}
+          SPACE_FOUND: ${{ steps.hf.outputs.space_found }}
+        run: |
+          set -euo pipefail
+          body=$(printf 'HF_PREFLIGHT_STATUS=%s\nHF_AUTH_SELECTED=%s\nHF_AUTH_ROLE=%s\nHF_BUCKET_CREATED=%s\nHF_BUCKET_PRIVATE=%s\nHF_SPACE_FOUND=%s' "$JOB_STATUS" "${AUTH:-}" "${ROLE:-}" "${BUCKET_CREATED:-}" "${BUCKET_PRIVATE:-}" "${SPACE_FOUND:-}")
+          python - "$body" <<'PY' >/tmp/comment.json
+          import json, sys
+          print(json.dumps({'body': sys.argv[1]}))
+          PY
+          curl --fail-with-body --silent --show-error \
+            -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPOSITORY}/issues/${ISSUE_NUMBER}/comments" \
+            --data-binary @/tmp/comment.json
