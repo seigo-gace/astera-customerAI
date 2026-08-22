@@ -67,7 +67,7 @@ def test_production_requires_hf_token_before_private_bucket_access():
         create_work_from_environment({})
 
 
-def test_production_requires_pinned_private_bucket_revision(tmp_path, monkeypatch):
+def test_production_requires_pinned_private_bucket_revision():
     with pytest.raises(RuntimeNotReady, match="kb_bucket_revision_missing"):
         create_work_from_environment({"HF_TOKEN": "test-token"})
 
@@ -82,17 +82,18 @@ def test_production_downloads_private_bucket_not_local_snapshot(tmp_path, monkey
 
     monkeypatch.setattr("runtime.startup.download_private_bucket_file", fake_download)
 
-    with pytest.raises(RuntimeNotReady, match="trained_model_4b_id_missing"):
-        create_work_from_environment(
-            {
-                "HF_TOKEN": "test-token",
-                "CUSTOMER_AI_KB_REPO_ID": "G-ACE/astera-customerai-kb",
-                "CUSTOMER_AI_KB_REVISION": "bucket-revision",
-                "CUSTOMER_AI_KB_CANONICAL_FILE": "canonical.jsonl",
-                "CUSTOMER_AI_KB_SNAPSHOT_PATH": str(tmp_path / "must-not-be-used.jsonl"),
-            }
-        )
+    work = create_work_from_environment(
+        {
+            "HF_TOKEN": "test-token",
+            "CUSTOMER_AI_KB_REPO_ID": "G-ACE/astera-customerai-kb",
+            "CUSTOMER_AI_KB_REVISION": "bucket-revision",
+            "CUSTOMER_AI_KB_CANONICAL_FILE": "canonical.jsonl",
+            "CUSTOMER_AI_KB_SNAPSHOT_PATH": str(tmp_path / "must-not-be-used.jsonl"),
+        }
+    )
 
+    assert isinstance(work, CustomerAIWork)
+    assert work.core.grounding.canonical.generation_id == "bucket-revision"
     assert calls == [
         (
             "G-ACE/astera-customerai-kb",
@@ -103,45 +104,15 @@ def test_production_downloads_private_bucket_not_local_snapshot(tmp_path, monkey
     ]
 
 
-def test_production_rejects_base_model_fallback(tmp_path, monkeypatch):
-    kb = _write_kb(tmp_path)
-    monkeypatch.setattr(
-        "runtime.startup.download_private_bucket_file",
-        lambda **_: kb,
-    )
-    with pytest.raises(RuntimeNotReady, match="trained_domain_model_required"):
+def test_production_bucket_download_failure_is_fail_closed(monkeypatch):
+    def broken_download(**_):
+        raise RuntimeError("not found")
+
+    monkeypatch.setattr("runtime.startup.download_private_bucket_file", broken_download)
+    with pytest.raises(RuntimeNotReady, match="kb_bucket_canonical_download_failed"):
         create_work_from_environment(
             {
                 "HF_TOKEN": "test-token",
                 "CUSTOMER_AI_KB_REVISION": "bucket-revision",
-                "CUSTOMER_AI_MODEL_4B_ID": "Qwen/Qwen3-4B",
-                "CUSTOMER_AI_MODEL_4B_REVISION": "rev-4b",
-                "CUSTOMER_AI_MODEL_4B_API_URL": "https://private-4b.example/v1/chat/completions",
-                "CUSTOMER_AI_MODEL_8B_ID": "Qwen/Qwen3-8B",
-                "CUSTOMER_AI_MODEL_8B_REVISION": "rev-8b",
-                "CUSTOMER_AI_MODEL_8B_API_URL": "https://private-8b.example/v1/chat/completions",
             }
         )
-
-
-def test_production_accepts_private_bucket_and_trained_endpoints(tmp_path, monkeypatch):
-    kb = _write_kb(tmp_path)
-    monkeypatch.setattr(
-        "runtime.startup.download_private_bucket_file",
-        lambda **_: kb,
-    )
-    work = create_work_from_environment(
-        {
-            "HF_TOKEN": "test-token",
-            "CUSTOMER_AI_KB_REPO_ID": "G-ACE/astera-customerai-kb",
-            "CUSTOMER_AI_KB_REVISION": "bucket-revision",
-            "CUSTOMER_AI_MODEL_4B_ID": "G-ACE/astera-customerai-domain-4b",
-            "CUSTOMER_AI_MODEL_4B_REVISION": "trained-rev-4b",
-            "CUSTOMER_AI_MODEL_4B_API_URL": "https://private-4b.example/v1/chat/completions",
-            "CUSTOMER_AI_MODEL_8B_ID": "G-ACE/astera-customerai-domain-8b",
-            "CUSTOMER_AI_MODEL_8B_REVISION": "trained-rev-8b",
-            "CUSTOMER_AI_MODEL_8B_API_URL": "https://private-8b.example/v1/chat/completions",
-        }
-    )
-    assert isinstance(work, CustomerAIWork)
-    assert work.core.grounding.canonical.generation_id == "bucket-revision"
