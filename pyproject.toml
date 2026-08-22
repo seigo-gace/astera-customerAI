@@ -6,7 +6,7 @@ dependencies = ["fastapi>=0.128,<1", "uvicorn>=0.48,<1", "pydantic>=2.12,<3", "h
 
 [project.optional-dependencies]
 training = ["datasets", "transformers", "peft", "trl"]
-test = ["pytest==9.0.2", "pytest-asyncio>=1,<2", "ruff>=0.12,<1", "huggingface_hub>=1.24,<2"]
+test = ["pytest==9.0.3", "pytest-asyncio>=1,<2", "ruff>=0.12,<1", "huggingface_hub>=1.24,<2"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
