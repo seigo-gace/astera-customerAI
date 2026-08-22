@@ -11,9 +11,13 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi, HfFileSystem, Volume, bucket_info
 
-from runtime.kb_bucket import HF_KB_BUCKET_DEFAULT, HF_KB_FILE_DEFAULT
+from runtime.kb_bucket import (
+    HF_KB_ACTIVE_POINTER_DEFAULT,
+    HF_KB_BUCKET_DEFAULT,
+    HF_KB_MOUNT_DEFAULT,
+)
 
 SPACE_ID_DEFAULT = "G-ACE/astera-customerAI"
 SPACE_URL_DEFAULT = "https://g-ace-astera-customerai.hf.space"
@@ -53,13 +57,15 @@ def _required_env(key: str) -> str:
     return value
 
 
-def _validate_bucket_config() -> dict[str, str]:
+def _bucket_config() -> dict[str, str]:
     return {
-        "repo_id": os.environ.get("CUSTOMER_AI_KB_REPO_ID", "").strip() or HF_KB_BUCKET_DEFAULT,
-        "revision": _required_env("CUSTOMER_AI_KB_REVISION"),
-        "canonical_file": os.environ.get("CUSTOMER_AI_KB_CANONICAL_FILE", "").strip() or HF_KB_FILE_DEFAULT,
-        "current_file": os.environ.get("CUSTOMER_AI_KB_CURRENT_FILE", "").strip(),
-        "alias_file": os.environ.get("CUSTOMER_AI_KB_ALIAS_FILE", "").strip(),
+        "bucket_id": os.environ.get("CUSTOMER_AI_KB_BUCKET_ID", "").strip() or HF_KB_BUCKET_DEFAULT,
+        "build_id": _required_env("CUSTOMER_AI_KB_BUILD_ID"),
+        "mount_path": os.environ.get("CUSTOMER_AI_KB_MOUNT_PATH", "").strip() or HF_KB_MOUNT_DEFAULT,
+        "active_pointer": (
+            os.environ.get("CUSTOMER_AI_KB_ACTIVE_POINTER", "").strip()
+            or HF_KB_ACTIVE_POINTER_DEFAULT
+        ),
     }
 
 
@@ -83,15 +89,14 @@ def _stage_payload(root: Path, stage: Path, bucket: dict[str, str]) -> dict[str,
     (stage / "README.md").write_text(_space_readme(root), encoding="utf-8")
 
     manifest: dict[str, Any] = {
-        "schema_version": 3,
+        "schema_version": 4,
         "source_sha": _git_head(root),
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "kb_storage": "private_hf_dataset_bucket",
-        "kb_repo_id": bucket["repo_id"],
-        "kb_revision": bucket["revision"],
-        "kb_canonical_file": bucket["canonical_file"],
-        "kb_current_file": bucket["current_file"] or None,
-        "kb_alias_file": bucket["alias_file"] or None,
+        "kb_storage": "huggingface_storage_bucket_volume",
+        "kb_bucket_id": bucket["bucket_id"],
+        "kb_build_id": bucket["build_id"],
+        "kb_mount_path": bucket["mount_path"],
+        "kb_active_pointer": bucket["active_pointer"],
         "kb_embedded_in_space": False,
         "deployment_path": "direct_hf_hub_no_github_actions",
     }
@@ -110,6 +115,65 @@ def _expected_files(stage: Path) -> set[str]:
     }
 
 
+def _read_active_pointer(*, token: str, bucket: dict[str, str]) -> dict[str, object]:
+    fs = HfFileSystem(token=token)
+    uri = f"hf://buckets/{bucket['bucket_id']}/{bucket['active_pointer']}"
+    try:
+        with fs.open(uri, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except Exception as exc:
+        raise SystemExit(f"kb_active_pointer_read_failed={type(exc).__name__}") from exc
+    if not isinstance(payload, dict):
+        raise SystemExit("kb_active_pointer_invalid")
+    if str(payload.get("build_id") or "") != bucket["build_id"]:
+        raise SystemExit(
+            f"kb_active_build_id_mismatch expected={bucket['build_id']!r} "
+            f"actual={payload.get('build_id')!r}"
+        )
+    canonical_path = str(payload.get("canonical_path") or "").strip()
+    if not canonical_path:
+        raise SystemExit("kb_active_canonical_path_missing")
+    canonical_uri = f"hf://buckets/{bucket['bucket_id']}/{canonical_path}"
+    if not fs.exists(canonical_uri):
+        raise SystemExit("kb_active_canonical_remote_missing")
+    return payload
+
+
+def _mount_kb_bucket(api: HfApi, *, space_id: str, bucket: dict[str, str]) -> None:
+    runtime = api.get_space_runtime(repo_id=space_id)
+    existing = list(getattr(runtime, "volumes", None) or [])
+    retained = [
+        volume
+        for volume in existing
+        if getattr(volume, "mount_path", None) != bucket["mount_path"]
+        and not (
+            getattr(volume, "type", None) == "bucket"
+            and getattr(volume, "source", None) == bucket["bucket_id"]
+        )
+    ]
+    retained.append(
+        Volume(
+            type="bucket",
+            source=bucket["bucket_id"],
+            mount_path=bucket["mount_path"],
+            read_only=True,
+        )
+    )
+    api.set_space_volumes(repo_id=space_id, volumes=retained)
+
+    readback = api.get_space_runtime(repo_id=space_id)
+    volumes = list(getattr(readback, "volumes", None) or [])
+    matched = [
+        volume
+        for volume in volumes
+        if getattr(volume, "type", None) == "bucket"
+        and getattr(volume, "source", None) == bucket["bucket_id"]
+        and getattr(volume, "mount_path", None) == bucket["mount_path"]
+    ]
+    if len(matched) != 1:
+        raise SystemExit("kb_bucket_volume_readback_failed")
+
+
 def _sync_runtime_config(
     api: HfApi,
     *,
@@ -123,7 +187,7 @@ def _sync_runtime_config(
             space_id,
             key="HF_TOKEN",
             value=runtime_token,
-            description="Customer AI private KB/model access token",
+            description="Customer AI runtime model access token",
         )
     elif "HF_TOKEN" not in existing_secrets and "HF_KEY" not in existing_secrets:
         raise SystemExit(
@@ -132,27 +196,20 @@ def _sync_runtime_config(
         )
 
     variables = {
-        "CUSTOMER_AI_KB_REPO_ID": bucket["repo_id"],
-        "CUSTOMER_AI_KB_REVISION": bucket["revision"],
-        "CUSTOMER_AI_KB_CANONICAL_FILE": bucket["canonical_file"],
+        "CUSTOMER_AI_KB_BUCKET_ID": bucket["bucket_id"],
+        "CUSTOMER_AI_KB_BUILD_ID": bucket["build_id"],
+        "CUSTOMER_AI_KB_MOUNT_PATH": bucket["mount_path"],
+        "CUSTOMER_AI_KB_ACTIVE_POINTER": bucket["active_pointer"],
     }
     for key, value in variables.items():
         api.add_space_variable(space_id, key=key, value=value)
 
-    optional_variables = {
-        "CUSTOMER_AI_KB_CURRENT_FILE": bucket["current_file"],
-        "CUSTOMER_AI_KB_ALIAS_FILE": bucket["alias_file"],
-    }
-    for key, value in optional_variables.items():
-        if value:
-            api.add_space_variable(space_id, key=key, value=value)
-        else:
-            try:
-                api.delete_space_variable(space_id, key=key)
-            except Exception:
-                pass
-
     for legacy_key in (
+        "CUSTOMER_AI_KB_REPO_ID",
+        "CUSTOMER_AI_KB_REVISION",
+        "CUSTOMER_AI_KB_CANONICAL_FILE",
+        "CUSTOMER_AI_KB_CURRENT_FILE",
+        "CUSTOMER_AI_KB_ALIAS_FILE",
         "CUSTOMER_AI_KB_SNAPSHOT_PATH",
         "CUSTOMER_AI_CURRENT_FACTS_PATH",
         "CUSTOMER_AI_ALIAS_REGISTRY_PATH",
@@ -245,7 +302,7 @@ def main() -> int:
         raise SystemExit("HF_TOKEN_missing_for_direct_deploy")
 
     _validate_repo(root)
-    bucket = _validate_bucket_config()
+    bucket = _bucket_config()
 
     with tempfile.TemporaryDirectory(prefix="astera-customerai-hf-") as tmp:
         stage = Path(tmp)
@@ -263,16 +320,12 @@ def main() -> int:
         if str(who.get("name") or "") != "G-ACE":
             raise SystemExit(f"unexpected_hf_identity={who.get('name')!r}")
 
-        bucket_info = api.repo_info(
-            repo_id=bucket["repo_id"],
-            repo_type="dataset",
-            revision=bucket["revision"],
-        )
-        if bucket_info.sha != bucket["revision"]:
-            raise SystemExit(
-                f"kb_bucket_revision_mismatch expected={bucket['revision']} actual={bucket_info.sha}"
-            )
+        info = bucket_info(bucket["bucket_id"], token=deploy_token)
+        if not info.private:
+            raise SystemExit("kb_bucket_is_not_private")
+        active = _read_active_pointer(token=deploy_token, bucket=bucket)
 
+        _mount_kb_bucket(api, space_id=args.space_id, bucket=bucket)
         _sync_runtime_config(
             api,
             space_id=args.space_id,
@@ -280,15 +333,15 @@ def main() -> int:
             bucket=bucket,
         )
 
-        info = api.repo_info(repo_id=args.space_id, repo_type="space")
+        space_info = api.repo_info(repo_id=args.space_id, repo_type="space")
         commit = api.upload_folder(
             repo_id=args.space_id,
             repo_type="space",
             folder_path=str(stage),
             path_in_repo=".",
             delete_patterns=["*", "**/*"],
-            parent_commit=info.sha,
-            commit_message=f"Direct deploy Customer AI {manifest['source_sha']} KB {bucket['revision']}",
+            parent_commit=space_info.sha,
+            commit_message=f"Direct deploy Customer AI {manifest['source_sha']} KB {bucket['build_id']}",
         )
 
         remote = set(api.list_repo_files(repo_id=args.space_id, repo_type="space"))
@@ -318,8 +371,11 @@ def main() -> int:
             "status": "success",
             "hf_commit": str(commit.oid),
             "source_sha": manifest["source_sha"],
-            "kb_repo_id": bucket["repo_id"],
-            "kb_revision": bucket["revision"],
+            "kb_bucket_id": bucket["bucket_id"],
+            "kb_build_id": bucket["build_id"],
+            "kb_mount_path": bucket["mount_path"],
+            "kb_active_pointer": bucket["active_pointer"],
+            "kb_active_canonical_path": active.get("canonical_path"),
             "kb_embedded_in_space": False,
             "space_stage": runtime.stage,
             **http_evidence,
