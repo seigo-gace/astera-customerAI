@@ -2,6 +2,15 @@ name: deploy-current-hf-space
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - app.py
+      - runtime/**
+      - config/**
+      - requirements.txt
+      - Dockerfile
+      - .github/workflows/deploy-hf.yml
 
 permissions:
   contents: read
@@ -12,7 +21,6 @@ concurrency:
 
 jobs:
   deploy:
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -132,4 +140,65 @@ jobs:
           if ready.get("status") != "ready" or ready.get("three_role_resident") is not True:
               raise SystemExit(f"HF_space_runtime_not_ready={ready!r}")
           print(json.dumps({"ready": ready}, ensure_ascii=False))
+          PY
+
+      - name: Verify staging browser CORS and Customer AI response
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          base = os.environ["HF_SPACE_URL"].rstrip("/")
+          origin = "https://staging.asterav8.jp"
+
+          preflight = urllib.request.Request(
+              base + "/respond",
+              method="OPTIONS",
+              headers={
+                  "Origin": origin,
+                  "Access-Control-Request-Method": "POST",
+                  "Access-Control-Request-Headers": "content-type",
+              },
+          )
+          with urllib.request.urlopen(preflight, timeout=15) as response:
+              allow_origin = response.headers.get("Access-Control-Allow-Origin")
+              if response.status != 200 or allow_origin != origin:
+                  raise SystemExit(
+                      f"staging_cors_failed status={response.status} allow_origin={allow_origin!r}"
+                  )
+
+          payload = json.dumps({
+              "message": "料金を教えて",
+              "source": "astera-app",
+              "locale": "ja-JP",
+              "session_id": "session_staging_deploy_gate",
+              "message_id": "message_staging_deploy_gate",
+              "response_mode": "auto",
+              "mode_source": "auto",
+              "current_path": "/app/new",
+          }).encode("utf-8")
+          request = urllib.request.Request(
+              base + "/respond",
+              data=payload,
+              method="POST",
+              headers={
+                  "Origin": origin,
+                  "Content-Type": "application/json",
+                  "Accept": "application/json",
+              },
+          )
+          with urllib.request.urlopen(request, timeout=45) as response:
+              body = json.loads(response.read().decode("utf-8"))
+              allow_origin = response.headers.get("Access-Control-Allow-Origin")
+              answer = str(body.get("answer") or body.get("clarification") or "").strip()
+              if response.status != 200 or allow_origin != origin or not answer:
+                  raise SystemExit(
+                      f"staging_respond_failed status={response.status} allow_origin={allow_origin!r} body={body!r}"
+                  )
+              print(json.dumps({
+                  "staging_cors": "ok",
+                  "staging_respond": "ok",
+                  "answer_preview": answer[:120],
+              }, ensure_ascii=False))
           PY
