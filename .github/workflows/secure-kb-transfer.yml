@@ -12,7 +12,7 @@ jobs:
   transfer:
     if: github.actor == 'seigo-gace' && github.event.issue.title == '[kb-transfer] customer-ai'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     env:
       HF_TOKEN_PRIMARY: ${{ secrets.HF_TOKEN }}
       HF_TOKEN_FALLBACK: ${{ secrets.HF_KEY }}
@@ -51,7 +51,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          deadline=$((SECONDS + 480))
+          deadline=$((SECONDS + 1800))
           while (( SECONDS < deadline )); do
             git fetch origin main --quiet
             if git cat-file -e origin/main:.kb-transfer/manifest.json 2>/dev/null; then
