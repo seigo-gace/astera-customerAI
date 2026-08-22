@@ -1,31 +1,20 @@
 model:
   topology: one_work_three_role_models
-
   constructive:
-    base_model_id: Qwen/Qwen3-4B
-    trained_model_id_env: CUSTOMER_AI_MODEL_4B_ID
-    trained_revision_env: CUSTOMER_AI_MODEL_4B_REVISION
-    inference_endpoint_env: CUSTOMER_AI_MODEL_4B_API_URL
-    role: constructive
-
+    model_id: Qwen/Qwen3-4B
+    route_alias: qwen3:4b
+    revision: null
   adversarial:
-    base_model_id: Qwen/Qwen3-4B
-    trained_model_id_env: CUSTOMER_AI_MODEL_4B_ID
-    trained_revision_env: CUSTOMER_AI_MODEL_4B_REVISION
-    inference_endpoint_env: CUSTOMER_AI_MODEL_4B_API_URL
-    role: adversarial
-
+    model_id: Qwen/Qwen3-4B
+    route_alias: qwen3:4b
+    revision: null
   evidence_bound:
-    base_model_id: Qwen/Qwen3-8B
-    trained_model_id_env: CUSTOMER_AI_MODEL_8B_ID
-    trained_revision_env: CUSTOMER_AI_MODEL_8B_REVISION
-    inference_endpoint_env: CUSTOMER_AI_MODEL_8B_API_URL
-    role: evidence_bound
-
-  backend_mode: private_hf_inference_endpoints
-  role_adapter_mode: trained_domain_model
+    model_id: Qwen/Qwen3-8B
+    route_alias: qwen3:8b
+    revision: null
+  backend_mode: benchmark_required
+  role_adapter_mode: benchmark_required
   require_trained_domain_model: true
   allow_untrained_production_model: false
   zero_gpu: false
   production_release_requires_revision_pin: true
-  browser_secret_exposure_allowed: false
