@@ -20,6 +20,14 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _sha256_remote(fs: HfFileSystem, uri: str) -> str:
+    digest = hashlib.sha256()
+    with fs.open(uri, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _required_file(value: str, label: str) -> Path:
     path = Path(value).expanduser().resolve()
     if not path.is_file() or path.stat().st_size == 0:
@@ -68,6 +76,9 @@ def main() -> int:
     bucket = create_bucket(bucket_id, private=True, exist_ok=True, token=token)
     if str(bucket.bucket_id) != bucket_id:
         raise SystemExit(f"unexpected_bucket_id={bucket.bucket_id!r}")
+    info = bucket_info(bucket_id, token=token)
+    if not info.private:
+        raise SystemExit("bucket_is_not_private")
 
     release_root = f"releases/{build_id}"
     canonical_remote = f"{release_root}/canonical.jsonl"
@@ -106,6 +117,8 @@ def main() -> int:
         },
     }
     manifest_bytes = (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    fs = HfFileSystem(token=token)
+    manifest_uri = _bucket_uri(bucket_id, manifest_remote)
 
     release_add: list[tuple[str | Path | bytes, str]] = [
         (canonical, canonical_remote),
@@ -116,18 +129,32 @@ def main() -> int:
     if aliases:
         release_add.append((aliases, aliases_remote))
 
-    # Publish immutable release payload first. The active pointer is switched only
-    # after every release file is remotely readable.
-    batch_bucket_files(bucket_id, add=release_add, token=token)
+    # A Build ID is immutable. Re-publishing an existing Build ID is allowed
+    # only when the stored manifest and every payload hash are identical.
+    if fs.exists(manifest_uri):
+        existing_manifest = _read_json(fs, manifest_uri)
+        if existing_manifest != manifest:
+            raise SystemExit("release_build_id_conflict")
+    else:
+        # Publish release payload first. active.json is switched only after
+        # payload + manifest have passed remote readback.
+        batch_bucket_files(bucket_id, add=release_add, token=token)
 
-    fs = HfFileSystem(token=token)
-    for remote in [canonical_remote, manifest_remote, current_remote, aliases_remote]:
-        if remote and not fs.exists(_bucket_uri(bucket_id, remote)):
+    remote_checks = [(canonical_remote, _sha256(canonical))]
+    if current:
+        remote_checks.append((current_remote, _sha256(current)))
+    if aliases:
+        remote_checks.append((aliases_remote, _sha256(aliases)))
+    for remote, expected_sha in remote_checks:
+        uri = _bucket_uri(bucket_id, remote)
+        if not fs.exists(uri):
             raise SystemExit(f"bucket_release_readback_missing={remote}")
+        if _sha256_remote(fs, uri) != expected_sha:
+            raise SystemExit(f"bucket_release_hash_mismatch={remote}")
 
-    remote_manifest = _read_json(fs, _bucket_uri(bucket_id, manifest_remote))
-    if remote_manifest.get("build_id") != build_id:
-        raise SystemExit("bucket_manifest_build_id_mismatch")
+    remote_manifest = _read_json(fs, manifest_uri)
+    if remote_manifest != manifest:
+        raise SystemExit("bucket_manifest_readback_mismatch")
 
     active: dict[str, object] = {
         "schema_version": 1,
@@ -143,10 +170,6 @@ def main() -> int:
     remote_active = _read_json(fs, _bucket_uri(bucket_id, "active.json"))
     if remote_active != active:
         raise SystemExit("bucket_active_pointer_readback_mismatch")
-
-    info = bucket_info(bucket_id, token=token)
-    if not info.private:
-        raise SystemExit("bucket_is_not_private")
 
     print(
         json.dumps(
