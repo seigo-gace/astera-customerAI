@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from .bootstrap import RuntimeDependencies, build_work
-from .hf_client import HF_CHAT_API
+from .hf_client import HF_CHAT_API, HF_MODEL_4B, HF_MODEL_8B
 from .live_state import EmptyLiveStateProvider, HybridLiveStateProvider
 from .service import CustomerAIWork
 
@@ -22,6 +22,20 @@ def _required_file(value: str, code: str) -> Path:
     if path is None or not path.is_file():
         raise RuntimeNotReady(code)
     return path
+
+
+def _required_value(values: Mapping[str, str], key: str, code: str) -> str:
+    value = values.get(key, "").strip()
+    if not value:
+        raise RuntimeNotReady(code)
+    return value
+
+
+def _required_https_endpoint(values: Mapping[str, str], key: str, code: str) -> str:
+    value = _required_value(values, key, code)
+    if not value.startswith("https://"):
+        raise RuntimeNotReady(f"{code}_invalid")
+    return value
 
 
 def _load_alias_registry(path_value: str) -> Mapping[str, Iterable[str]]:
@@ -65,6 +79,29 @@ def create_work_from_environment(
     if role_pool is None and not token:
         raise RuntimeNotReady("hf_token_missing")
 
+    if role_pool is None:
+        model_4b_id = _required_value(values, "CUSTOMER_AI_MODEL_4B_ID", "trained_model_4b_id_missing")
+        _required_value(values, "CUSTOMER_AI_MODEL_4B_REVISION", "trained_model_4b_revision_missing")
+        model_4b_api_url = _required_https_endpoint(
+            values,
+            "CUSTOMER_AI_MODEL_4B_API_URL",
+            "trained_model_4b_endpoint_missing",
+        )
+        model_8b_id = _required_value(values, "CUSTOMER_AI_MODEL_8B_ID", "trained_model_8b_id_missing")
+        _required_value(values, "CUSTOMER_AI_MODEL_8B_REVISION", "trained_model_8b_revision_missing")
+        model_8b_api_url = _required_https_endpoint(
+            values,
+            "CUSTOMER_AI_MODEL_8B_API_URL",
+            "trained_model_8b_endpoint_missing",
+        )
+        if model_4b_id == HF_MODEL_4B or model_8b_id == HF_MODEL_8B:
+            raise RuntimeNotReady("trained_domain_model_required")
+    else:
+        model_4b_id = HF_MODEL_4B
+        model_8b_id = HF_MODEL_8B
+        model_4b_api_url = HF_CHAT_API
+        model_8b_api_url = HF_CHAT_API
+
     try:
         fuzzy_threshold = float(values.get("CUSTOMER_AI_JA_FUZZY_THRESHOLD", "90"))
     except ValueError as exc:
@@ -79,7 +116,12 @@ def create_work_from_environment(
             kb_generation_id=generation_id,
             hf_token=token or None,
             role_pool=role_pool,
-            hf_api_url=values.get("CUSTOMER_AI_HF_API_URL", "").strip() or HF_CHAT_API,
+            constructive_model_id=model_4b_id,
+            adversarial_model_id=model_4b_id,
+            evidence_model_id=model_8b_id,
+            constructive_api_url=model_4b_api_url,
+            adversarial_api_url=model_4b_api_url,
+            evidence_api_url=model_8b_api_url,
             timeout_seconds=30.0,
         )
     )
