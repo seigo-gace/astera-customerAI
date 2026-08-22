@@ -107,3 +107,16 @@ def test_default_cors_allows_hp_web_app_and_native_origins():
             )
             assert response.status_code == 200
             assert response.headers["access-control-allow-origin"] == origin
+
+
+def test_configured_origins_extend_defaults_instead_of_replacing_staging():
+    origins = app_module._merge_allowed_origins(
+        "https://asterav8.jp,https://customer.example"
+    )
+    assert "https://asterav8.jp" in origins
+    assert "https://staging.asterav8.jp" in origins
+    assert "https://open.asterav8.jp" in origins
+    assert "https://localhost" in origins
+    assert "capacitor://localhost" in origins
+    assert "https://customer.example" in origins
+    assert len(origins) == len(set(origins))
