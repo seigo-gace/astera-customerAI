@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .bootstrap import RuntimeDependencies, build_work
 from .hf_client import HF_CHAT_API, HF_MODEL_4B, HF_MODEL_8B
+from .kb_bucket import HF_KB_BUCKET_DEFAULT, HF_KB_FILE_DEFAULT, download_private_bucket_file
 from .live_state import EmptyLiveStateProvider, HybridLiveStateProvider
 from .service import CustomerAIWork
 
@@ -56,28 +57,94 @@ def _load_alias_registry(path_value: str) -> Mapping[str, Iterable[str]]:
     return normalized
 
 
+def _download_bucket_file(
+    *,
+    repo_id: str,
+    revision: str,
+    filename: str,
+    token: str,
+    blocker: str,
+) -> Path:
+    try:
+        return download_private_bucket_file(
+            repo_id=repo_id,
+            revision=revision,
+            filename=filename,
+            token=token,
+        )
+    except Exception as exc:
+        raise RuntimeNotReady(blocker) from exc
+
+
+def _production_kb_files(values: Mapping[str, str], token: str) -> tuple[Path, Path | None, Path | None, str]:
+    repo_id = values.get("CUSTOMER_AI_KB_REPO_ID", "").strip() or HF_KB_BUCKET_DEFAULT
+    revision = _required_value(values, "CUSTOMER_AI_KB_REVISION", "kb_bucket_revision_missing")
+    canonical_name = values.get("CUSTOMER_AI_KB_CANONICAL_FILE", "").strip() or HF_KB_FILE_DEFAULT
+
+    canonical_path = _download_bucket_file(
+        repo_id=repo_id,
+        revision=revision,
+        filename=canonical_name,
+        token=token,
+        blocker="kb_bucket_canonical_download_failed",
+    )
+
+    current_path: Path | None = None
+    current_name = values.get("CUSTOMER_AI_KB_CURRENT_FILE", "").strip()
+    if current_name:
+        current_path = _download_bucket_file(
+            repo_id=repo_id,
+            revision=revision,
+            filename=current_name,
+            token=token,
+            blocker="kb_bucket_current_download_failed",
+        )
+
+    alias_path: Path | None = None
+    alias_name = values.get("CUSTOMER_AI_KB_ALIAS_FILE", "").strip()
+    if alias_name:
+        alias_path = _download_bucket_file(
+            repo_id=repo_id,
+            revision=revision,
+            filename=alias_name,
+            token=token,
+            blocker="kb_bucket_alias_download_failed",
+        )
+
+    return canonical_path, current_path, alias_path, revision
+
+
 def create_work_from_environment(
     env: Mapping[str, str] | None = None,
     *,
     role_pool: object | None = None,
 ) -> CustomerAIWork:
     values = os.environ if env is None else env
-    kb_path = _required_file(values.get("CUSTOMER_AI_KB_SNAPSHOT_PATH", "").strip(), "kb_snapshot_missing")
-    generation_id = values.get("CUSTOMER_AI_KB_GENERATION_ID", "").strip() or kb_path.stem
+    token = (values.get("HF_TOKEN", "") or values.get("HF_KEY", "")).strip()
 
-    current_value = values.get("CUSTOMER_AI_CURRENT_FACTS_PATH", "").strip()
-    if current_value:
-        current_path = _required_file(current_value, "current_facts_missing")
+    if role_pool is None:
+        if not token:
+            raise RuntimeNotReady("hf_token_missing")
+        kb_path, current_path, alias_path, bucket_revision = _production_kb_files(values, token)
+        generation_id = values.get("CUSTOMER_AI_KB_GENERATION_ID", "").strip() or bucket_revision
+    else:
+        kb_path = _required_file(
+            values.get("CUSTOMER_AI_KB_SNAPSHOT_PATH", "").strip(),
+            "kb_snapshot_missing",
+        )
+        generation_id = values.get("CUSTOMER_AI_KB_GENERATION_ID", "").strip() or kb_path.stem
+        current_value = values.get("CUSTOMER_AI_CURRENT_FACTS_PATH", "").strip()
+        current_path = _required_file(current_value, "current_facts_missing") if current_value else None
+        alias_value = values.get("CUSTOMER_AI_ALIAS_REGISTRY_PATH", "").strip()
+        alias_path = _required_file(alias_value, "alias_registry_missing") if alias_value else None
+
+    if current_path is not None:
         live_provider = HybridLiveStateProvider.from_jsonl(
             current_path,
             generation_id=f"{generation_id}:current",
         )
     else:
         live_provider = EmptyLiveStateProvider()
-
-    token = (values.get("HF_TOKEN", "") or values.get("HF_KEY", "")).strip()
-    if role_pool is None and not token:
-        raise RuntimeNotReady("hf_token_missing")
 
     if role_pool is None:
         model_4b_id = _required_value(values, "CUSTOMER_AI_MODEL_4B_ID", "trained_model_4b_id_missing")
@@ -110,7 +177,7 @@ def create_work_from_environment(
     return build_work(
         RuntimeDependencies(
             live_state_provider=live_provider,
-            japanese_alias_registry=_load_alias_registry(values.get("CUSTOMER_AI_ALIAS_REGISTRY_PATH", "")),
+            japanese_alias_registry=_load_alias_registry(str(alias_path) if alias_path else ""),
             japanese_fuzzy_threshold=fuzzy_threshold,
             kb_snapshot_path=str(kb_path),
             kb_generation_id=generation_id,
