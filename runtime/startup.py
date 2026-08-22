@@ -7,7 +7,11 @@ from pathlib import Path
 
 from .bootstrap import RuntimeDependencies, build_work
 from .hf_client import HF_CHAT_API
-from .kb_bucket import HF_KB_BUCKET_DEFAULT, HF_KB_FILE_DEFAULT, download_private_bucket_file
+from .kb_bucket import (
+    HF_KB_ACTIVE_POINTER_DEFAULT,
+    HF_KB_MOUNT_DEFAULT,
+    load_mounted_kb_release,
+)
 from .live_state import EmptyLiveStateProvider, HybridLiveStateProvider
 from .service import CustomerAIWork
 
@@ -50,61 +54,27 @@ def _load_alias_registry(path_value: str) -> Mapping[str, Iterable[str]]:
     return normalized
 
 
-def _download_bucket_file(
-    *,
-    repo_id: str,
-    revision: str,
-    filename: str,
-    token: str,
-    blocker: str,
-) -> Path:
-    try:
-        return download_private_bucket_file(
-            repo_id=repo_id,
-            revision=revision,
-            filename=filename,
-            token=token,
-        )
-    except Exception as exc:
-        raise RuntimeNotReady(blocker) from exc
-
-
-def _production_kb_files(values: Mapping[str, str], token: str) -> tuple[Path, Path | None, Path | None, str]:
-    repo_id = values.get("CUSTOMER_AI_KB_REPO_ID", "").strip() or HF_KB_BUCKET_DEFAULT
-    revision = _required_value(values, "CUSTOMER_AI_KB_REVISION", "kb_bucket_revision_missing")
-    canonical_name = values.get("CUSTOMER_AI_KB_CANONICAL_FILE", "").strip() or HF_KB_FILE_DEFAULT
-
-    canonical_path = _download_bucket_file(
-        repo_id=repo_id,
-        revision=revision,
-        filename=canonical_name,
-        token=token,
-        blocker="kb_bucket_canonical_download_failed",
+def _production_kb_files(values: Mapping[str, str]) -> tuple[Path, Path | None, Path | None, str]:
+    build_id = _required_value(values, "CUSTOMER_AI_KB_BUILD_ID", "kb_build_id_missing")
+    mount_path = values.get("CUSTOMER_AI_KB_MOUNT_PATH", "").strip() or HF_KB_MOUNT_DEFAULT
+    pointer_name = (
+        values.get("CUSTOMER_AI_KB_ACTIVE_POINTER", "").strip()
+        or HF_KB_ACTIVE_POINTER_DEFAULT
     )
-
-    current_path: Path | None = None
-    current_name = values.get("CUSTOMER_AI_KB_CURRENT_FILE", "").strip()
-    if current_name:
-        current_path = _download_bucket_file(
-            repo_id=repo_id,
-            revision=revision,
-            filename=current_name,
-            token=token,
-            blocker="kb_bucket_current_download_failed",
+    try:
+        release = load_mounted_kb_release(
+            mount_path=mount_path,
+            expected_build_id=build_id,
+            pointer_name=pointer_name,
         )
-
-    alias_path: Path | None = None
-    alias_name = values.get("CUSTOMER_AI_KB_ALIAS_FILE", "").strip()
-    if alias_name:
-        alias_path = _download_bucket_file(
-            repo_id=repo_id,
-            revision=revision,
-            filename=alias_name,
-            token=token,
-            blocker="kb_bucket_alias_download_failed",
-        )
-
-    return canonical_path, current_path, alias_path, revision
+    except ValueError as exc:
+        raise RuntimeNotReady(str(exc)) from exc
+    return (
+        release.canonical_path,
+        release.current_facts_path,
+        release.aliases_path,
+        release.build_id,
+    )
 
 
 def create_work_from_environment(
@@ -113,13 +83,10 @@ def create_work_from_environment(
     role_pool: object | None = None,
 ) -> CustomerAIWork:
     values = os.environ if env is None else env
-    token = (values.get("HF_TOKEN", "") or values.get("HF_KEY", "")).strip()
 
     if role_pool is None:
-        if not token:
-            raise RuntimeNotReady("hf_token_missing")
-        kb_path, current_path, alias_path, bucket_revision = _production_kb_files(values, token)
-        generation_id = values.get("CUSTOMER_AI_KB_GENERATION_ID", "").strip() or bucket_revision
+        kb_path, current_path, alias_path, build_id = _production_kb_files(values)
+        generation_id = values.get("CUSTOMER_AI_KB_GENERATION_ID", "").strip() or build_id
     else:
         kb_path = _required_file(
             values.get("CUSTOMER_AI_KB_SNAPSHOT_PATH", "").strip(),
@@ -138,6 +105,10 @@ def create_work_from_environment(
         )
     else:
         live_provider = EmptyLiveStateProvider()
+
+    token = (values.get("HF_TOKEN", "") or values.get("HF_KEY", "")).strip()
+    if role_pool is None and not token:
+        raise RuntimeNotReady("hf_token_missing")
 
     try:
         fuzzy_threshold = float(values.get("CUSTOMER_AI_JA_FUZZY_THRESHOLD", "90"))
