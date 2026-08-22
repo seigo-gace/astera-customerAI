@@ -73,13 +73,19 @@ _DEFAULT_ALLOWED_ORIGINS = (
     "https://localhost",
     "capacitor://localhost",
 )
+
+
+def _merge_allowed_origins(configured: str) -> list[str]:
+    extra_origins = [
+        origin.strip()
+        for origin in configured.split(",")
+        if origin.strip()
+    ]
+    return list(dict.fromkeys([*_DEFAULT_ALLOWED_ORIGINS, *extra_origins]))
+
+
 _configured_origins = os.environ.get("CUSTOMER_AI_ALLOWED_ORIGINS", "").strip()
-_extra_origins = [
-    origin.strip()
-    for origin in _configured_origins.split(",")
-    if origin.strip()
-]
-_origins = list(dict.fromkeys([*_DEFAULT_ALLOWED_ORIGINS, *_extra_origins]))
+_origins = _merge_allowed_origins(_configured_origins)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,
