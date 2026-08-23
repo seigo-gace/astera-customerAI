@@ -1,0 +1,72 @@
+name: customer-ai-respond-probe
+
+on:
+  issues:
+    types: [opened, reopened, edited]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  probe:
+    if: github.actor == 'seigo-gace' && github.event.issue.title == '[respond-probe] customer-ai'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      REPOSITORY: ${{ github.repository }}
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+      GH_TOKEN: ${{ github.token }}
+      SPACE_URL: https://g-ace-astera-customerai.hf.space
+    steps:
+      - name: Probe HTTP contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' >/tmp/probe.txt
+          import json, os
+          import urllib.request
+          base=os.environ['SPACE_URL'].rstrip('/')
+          for path in ('/health','/ready'):
+              try:
+                  with urllib.request.urlopen(base+path,timeout=60) as r:
+                      print(path+'_STATUS='+str(r.status))
+                      print(path+'_BODY='+r.read().decode('utf-8','replace')[:10000])
+              except Exception as exc:
+                  print(path+'_ERROR='+type(exc).__name__+':'+str(exc))
+          payload=json.dumps({
+              'message':'Asteraとは何ですか？','source':'astera-app','locale':'ja-JP',
+              'session_id':'session_probe','message_id':'message_probe',
+              'response_mode':'auto','mode_source':'auto','current_path':'/app/new'
+          },ensure_ascii=False).encode('utf-8')
+          req=urllib.request.Request(base+'/respond',data=payload,method='POST',headers={
+              'Content-Type':'application/json','Accept':'application/json','Origin':'https://staging.asterav8.jp'
+          })
+          try:
+              with urllib.request.urlopen(req,timeout=90) as r:
+                  print('/respond_STATUS='+str(r.status))
+                  print('/respond_HEADERS='+repr(dict(r.headers.items())))
+                  print('/respond_BODY='+r.read().decode('utf-8','replace')[:30000])
+          except Exception as exc:
+              print('/respond_ERROR='+type(exc).__name__+':'+str(exc))
+              if hasattr(exc,'read'):
+                  try: print('/respond_ERROR_BODY='+exc.read().decode('utf-8','replace')[:30000])
+                  except Exception: pass
+          PY
+      - name: Report
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' >/tmp/result.json
+          import json
+          try: text=open('/tmp/probe.txt',encoding='utf-8',errors='replace').read()
+          except Exception as exc: text='PROBE_MISSING='+type(exc).__name__
+          print(json.dumps({'body':'RESPOND_PROBE\n```\n'+text[:60000]+'\n```'}))
+          PY
+          curl --fail-with-body --silent --show-error -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${REPOSITORY}/issues/${ISSUE_NUMBER}/comments" \
+            --data-binary @/tmp/result.json >/dev/null
