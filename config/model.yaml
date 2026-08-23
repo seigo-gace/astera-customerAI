@@ -1,19 +1,33 @@
 model:
   topology: one_work_three_role_models
   constructive:
-    model_id: Qwen/Qwen3-4B
-    route_alias: qwen3:4b
-    revision: null
+    model_id: llm-jp/llm-jp-3-3.7b-instruct3
+    class: 4B
+    backend: local_llama_cpp
+    endpoint: http://127.0.0.1:8081/v1/chat/completions
+    gguf_repo: mmnga/llm-jp-3-3.7b-instruct3-gguf
+    revision: 7edef5a4f094ec8c1aed1e196c6a544675efbc2f
+    gguf_sha256: a4a09d2141717a01b44e7a8dbdb28da8c01e9078c8051367cd6a20f7008ef5a8
   adversarial:
-    model_id: Qwen/Qwen3-4B
-    route_alias: qwen3:4b
-    revision: null
+    model_id: llm-jp/llm-jp-3-3.7b-instruct3
+    class: 4B
+    backend: local_llama_cpp
+    endpoint: http://127.0.0.1:8082/v1/chat/completions
+    gguf_repo: mmnga/llm-jp-3-3.7b-instruct3-gguf
+    revision: 7edef5a4f094ec8c1aed1e196c6a544675efbc2f
+    gguf_sha256: a4a09d2141717a01b44e7a8dbdb28da8c01e9078c8051367cd6a20f7008ef5a8
   evidence_bound:
-    model_id: Qwen/Qwen3-8B
-    route_alias: qwen3:8b
-    revision: null
-  backend_mode: benchmark_required
-  role_adapter_mode: benchmark_required
+    model_id: llm-jp/llm-jp-4-8b-instruct
+    class: 8B
+    backend: local_llama_cpp
+    endpoint: http://127.0.0.1:8083/v1/chat/completions
+    gguf_repo: mmnga-o/llm-jp-4-8b-instruct-gguf
+    revision: 7ae4da12cee2f109509cb8e1d01cf8a0f1a5fbc1
+    gguf_sha256: b6a61b9c8d4e7cb1ae543d8fcf472c9fb9abfc5d48af17f5017ce89c2dc0bd56
+  backend_mode: local_cpu_basic_no_inference_provider
+  role_adapter_mode: independent_role_processes
+  inference_provider_allowed: false
+  inference_provider_credit_burn_allowed: false
   require_trained_domain_model: true
   allow_untrained_production_model: false
   zero_gpu: false
