@@ -6,7 +6,11 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from .bootstrap import RuntimeDependencies, build_work
-from .hf_client import HF_CHAT_API
+from .hf_client import (
+    HF_CHAT_API_ADVERSARIAL,
+    HF_CHAT_API_CONSTRUCTIVE,
+    HF_CHAT_API_EVIDENCE,
+)
 from .kb_bucket import (
     HF_KB_ACTIVE_POINTER_DEFAULT,
     HF_KB_BUCKET_DEFAULT,
@@ -59,10 +63,7 @@ def _load_alias_registry(path_value: str) -> Mapping[str, Iterable[str]]:
 def _production_kb_files(values: Mapping[str, str]) -> tuple[Path, Path | None, Path | None, str]:
     build_id = _required_value(values, "CUSTOMER_AI_KB_BUILD_ID", "kb_build_id_missing")
     mount_path = values.get("CUSTOMER_AI_KB_MOUNT_PATH", "").strip() or HF_KB_MOUNT_DEFAULT
-    pointer_name = (
-        values.get("CUSTOMER_AI_KB_ACTIVE_POINTER", "").strip()
-        or HF_KB_ACTIVE_POINTER_DEFAULT
-    )
+    pointer_name = values.get("CUSTOMER_AI_KB_ACTIVE_POINTER", "").strip() or HF_KB_ACTIVE_POINTER_DEFAULT
     bucket_id = values.get("CUSTOMER_AI_KB_BUCKET_ID", "").strip() or HF_KB_BUCKET_DEFAULT
     token = (values.get("HF_TOKEN", "") or values.get("HF_KEY", "")).strip()
 
@@ -124,6 +125,7 @@ def create_work_from_environment(
     else:
         live_provider = EmptyLiveStateProvider()
 
+    # HF token is retained only for private KB bucket access. Model inference is local-only.
     token = (values.get("HF_TOKEN", "") or values.get("HF_KEY", "")).strip()
     if role_pool is None and not token:
         raise RuntimeNotReady("hf_token_missing")
@@ -142,7 +144,12 @@ def create_work_from_environment(
             kb_generation_id=generation_id,
             hf_token=token or None,
             role_pool=role_pool,
-            hf_api_url=values.get("CUSTOMER_AI_HF_API_URL", "").strip() or HF_CHAT_API,
-            timeout_seconds=30.0,
+            constructive_api_url=values.get("CUSTOMER_AI_CONSTRUCTIVE_API_URL", "").strip()
+            or HF_CHAT_API_CONSTRUCTIVE,
+            adversarial_api_url=values.get("CUSTOMER_AI_ADVERSARIAL_API_URL", "").strip()
+            or HF_CHAT_API_ADVERSARIAL,
+            evidence_api_url=values.get("CUSTOMER_AI_EVIDENCE_API_URL", "").strip()
+            or HF_CHAT_API_EVIDENCE,
+            timeout_seconds=float(values.get("CUSTOMER_AI_ROLE_TIMEOUT_SECONDS", "600")),
         )
     )
