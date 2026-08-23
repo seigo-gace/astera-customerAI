@@ -33,7 +33,12 @@ def test_health_and_not_ready_contract():
         assert client.get("/health").status_code == 200
         ready = client.get("/ready").json()
         assert ready["status"] == "not_ready"
-        assert ready["blocker"] in {"kb_snapshot_missing", "customer_ai_not_ready"}
+        assert ready["blocker"] in {
+            "kb_snapshot_missing",
+            "kb_build_id_missing",
+            "hf_token_missing",
+            "customer_ai_not_ready",
+        }
         assert client.post(
             "/v1/customer-ai/messages",
             json={"session_id": "s", "message": "q"},
