@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from huggingface_hub import HfApi, HfFileSystem, Volume, bucket_info
+from huggingface_hub import HfApi, HfFileSystem, bucket_info
 
 HF_KB_BUCKET_DEFAULT = "G-ACE/astera-customerai-kb"
 HF_KB_MOUNT_DEFAULT = "/data/customer-ai"
@@ -24,6 +24,7 @@ REQUIRED_REPO_FILES = (
     "requirements.txt",
     "pyproject.toml",
     ".dockerignore",
+    "scripts/start_local_cpu.sh",
 )
 REQUIRED_REPO_DIRS = ("config", "runtime")
 
@@ -80,22 +81,25 @@ def _space_readme(root: Path) -> str:
 
 def _stage_payload(root: Path, stage: Path, bucket: dict[str, str]) -> dict[str, Any]:
     for name in REQUIRED_REPO_FILES:
-        shutil.copy2(root / name, stage / name)
+        target = stage / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(root / name, target)
     for name in REQUIRED_REPO_DIRS:
         shutil.copytree(root / name, stage / name)
     (stage / "README.md").write_text(_space_readme(root), encoding="utf-8")
 
     manifest: dict[str, Any] = {
-        "schema_version": 4,
+        "schema_version": 5,
         "source_sha": _git_head(root),
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "kb_storage": "huggingface_storage_bucket_volume",
+        "kb_storage": "huggingface_private_bucket_remote_read",
         "kb_bucket_id": bucket["bucket_id"],
         "kb_build_id": bucket["build_id"],
-        "kb_mount_path": bucket["mount_path"],
         "kb_active_pointer": bucket["active_pointer"],
         "kb_embedded_in_space": False,
-        "deployment_path": "direct_hf_hub_no_github_actions",
+        "role_topology": "local_cpu_4b_4b_8b",
+        "inference_provider": "disabled",
+        "deployment_path": "direct_hf_hub_cpu_basic",
     }
     (stage / "deployment-manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
@@ -124,58 +128,16 @@ def _read_active_pointer(*, token: str, bucket: dict[str, str]) -> dict[str, obj
         raise SystemExit("kb_active_pointer_invalid")
     if str(payload.get("build_id") or "") != bucket["build_id"]:
         raise SystemExit(
-            f"kb_active_build_id_mismatch expected={bucket['build_id']!r} "
-            f"actual={payload.get('build_id')!r}"
+            f"kb_active_build_id_mismatch expected={bucket['build_id']!r} actual={payload.get('build_id')!r}"
         )
     canonical_path = str(payload.get("canonical_path") or "").strip()
     manifest_path = str(payload.get("manifest_path") or "").strip()
-    if not canonical_path:
-        raise SystemExit("kb_active_canonical_path_missing")
-    if not manifest_path:
-        raise SystemExit("kb_active_manifest_path_missing")
-    for path, blocker in (
-        (canonical_path, "kb_active_canonical_remote_missing"),
-        (manifest_path, "kb_active_manifest_remote_missing"),
-    ):
+    if not canonical_path or not manifest_path:
+        raise SystemExit("kb_active_paths_missing")
+    for path in (canonical_path, manifest_path):
         if not fs.exists(f"hf://buckets/{bucket['bucket_id']}/{path}"):
-            raise SystemExit(blocker)
+            raise SystemExit(f"kb_active_remote_missing={path}")
     return payload
-
-
-def _mount_kb_bucket(api: HfApi, *, space_id: str, bucket: dict[str, str]) -> None:
-    runtime = api.get_space_runtime(repo_id=space_id)
-    existing = list(getattr(runtime, "volumes", None) or [])
-    retained = [
-        volume
-        for volume in existing
-        if getattr(volume, "mount_path", None) != bucket["mount_path"]
-        and not (
-            getattr(volume, "type", None) == "bucket"
-            and getattr(volume, "source", None) == bucket["bucket_id"]
-        )
-    ]
-    retained.append(
-        Volume(
-            type="bucket",
-            source=bucket["bucket_id"],
-            mount_path=bucket["mount_path"],
-            read_only=True,
-        )
-    )
-    api.set_space_volumes(repo_id=space_id, volumes=retained)
-
-    readback = api.get_space_runtime(repo_id=space_id)
-    volumes = list(getattr(readback, "volumes", None) or [])
-    matched = [
-        volume
-        for volume in volumes
-        if getattr(volume, "type", None) == "bucket"
-        and getattr(volume, "source", None) == bucket["bucket_id"]
-        and getattr(volume, "mount_path", None) == bucket["mount_path"]
-        and getattr(volume, "read_only", None) is True
-    ]
-    if len(matched) != 1:
-        raise SystemExit("kb_bucket_volume_readback_failed")
 
 
 def _sync_runtime_config(
@@ -191,12 +153,11 @@ def _sync_runtime_config(
             space_id,
             key="HF_TOKEN",
             value=runtime_token,
-            description="Customer AI runtime model access token",
+            description="Customer AI private KB bucket access token; not used for model inference",
         )
     elif "HF_TOKEN" not in existing_secrets and "HF_KEY" not in existing_secrets:
         raise SystemExit(
-            "space_runtime_token_missing: set CUSTOMER_AI_RUNTIME_HF_TOKEN "
-            "or configure HF_TOKEN/HF_KEY in the Space before deployment"
+            "space_kb_token_missing: set CUSTOMER_AI_RUNTIME_HF_TOKEN or configure HF_TOKEN/HF_KEY"
         )
 
     variables = {
@@ -204,11 +165,16 @@ def _sync_runtime_config(
         "CUSTOMER_AI_KB_BUILD_ID": bucket["build_id"],
         "CUSTOMER_AI_KB_MOUNT_PATH": bucket["mount_path"],
         "CUSTOMER_AI_KB_ACTIVE_POINTER": bucket["active_pointer"],
+        "CUSTOMER_AI_CONSTRUCTIVE_API_URL": "http://127.0.0.1:8081/v1/chat/completions",
+        "CUSTOMER_AI_ADVERSARIAL_API_URL": "http://127.0.0.1:8082/v1/chat/completions",
+        "CUSTOMER_AI_EVIDENCE_API_URL": "http://127.0.0.1:8083/v1/chat/completions",
+        "CUSTOMER_AI_ROLE_TIMEOUT_SECONDS": "600",
     }
     for key, value in variables.items():
         api.add_space_variable(space_id, key=key, value=value)
 
     for legacy_key in (
+        "CUSTOMER_AI_HF_API_URL",
         "CUSTOMER_AI_KB_REPO_ID",
         "CUSTOMER_AI_KB_REVISION",
         "CUSTOMER_AI_KB_CANONICAL_FILE",
@@ -222,6 +188,12 @@ def _sync_runtime_config(
             api.delete_space_variable(space_id, key=legacy_key)
         except Exception:
             pass
+
+
+def _assert_cpu_basic(runtime: Any) -> None:
+    hardware = str(getattr(runtime, "hardware", "") or "").lower().replace("_", "-")
+    if hardware and hardware not in {"cpu-basic", "cpu basic"}:
+        raise SystemExit(f"paid_hardware_forbidden={hardware}")
 
 
 def _verify_http(space_url: str, origin: str, timeout_seconds: float) -> dict[str, Any]:
@@ -249,8 +221,7 @@ def _verify_http(space_url: str, origin: str, timeout_seconds: float) -> dict[st
         )
         if preflight.status_code != 200 or preflight.headers.get("access-control-allow-origin") != origin:
             raise SystemExit(
-                "cors_preflight_failed="
-                f"{preflight.status_code}:{preflight.headers.get('access-control-allow-origin')!r}"
+                f"cors_preflight_failed={preflight.status_code}:{preflight.headers.get('access-control-allow-origin')!r}"
             )
 
         response = client.post(
@@ -260,8 +231,8 @@ def _verify_http(space_url: str, origin: str, timeout_seconds: float) -> dict[st
                 "message": "Asteraとは何ですか？",
                 "source": "astera-app",
                 "locale": "ja-JP",
-                "session_id": "session_direct_hf_deploy_gate",
-                "message_id": "message_direct_hf_deploy_gate",
+                "session_id": "session_free_local_deploy_gate",
+                "message_id": "message_free_local_deploy_gate",
                 "response_mode": "auto",
                 "mode_source": "auto",
                 "current_path": "/app/new",
@@ -285,15 +256,13 @@ def _verify_http(space_url: str, origin: str, timeout_seconds: float) -> dict[st
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Deploy Astera Customer AI directly to Hugging Face Space without GitHub Actions."
-    )
+    parser = argparse.ArgumentParser(description="Deploy Astera Customer AI to HF CPU Basic with local models.")
     parser.add_argument("--repo-root", default=".")
     parser.add_argument("--space-id", default=os.environ.get("HF_SPACE_ID", SPACE_ID_DEFAULT))
     parser.add_argument("--space-url", default=os.environ.get("HF_SPACE_URL", SPACE_URL_DEFAULT))
     parser.add_argument("--origin", default="https://staging.asterav8.jp")
-    parser.add_argument("--wait-timeout", type=float, default=900.0)
-    parser.add_argument("--http-timeout", type=float, default=60.0)
+    parser.add_argument("--wait-timeout", type=float, default=2400.0)
+    parser.add_argument("--http-timeout", type=float, default=900.0)
     parser.add_argument("--no-factory-reboot", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -301,7 +270,6 @@ def main() -> int:
     root = Path(args.repo_root).resolve()
     deploy_token = os.environ.get("HF_TOKEN", "").strip()
     runtime_token = os.environ.get("CUSTOMER_AI_RUNTIME_HF_TOKEN", "").strip()
-
     if not deploy_token and not args.dry_run:
         raise SystemExit("HF_TOKEN_missing_for_direct_deploy")
 
@@ -315,7 +283,6 @@ def main() -> int:
         if any(path.startswith("kb/") for path in expected):
             raise SystemExit("embedded_kb_payload_forbidden")
         print(json.dumps({"preflight": "ok", "manifest": manifest, "files": sorted(expected)}, ensure_ascii=False))
-
         if args.dry_run:
             return 0
 
@@ -329,13 +296,9 @@ def main() -> int:
             raise SystemExit("kb_bucket_is_not_private")
         active = _read_active_pointer(token=deploy_token, bucket=bucket)
 
-        _mount_kb_bucket(api, space_id=args.space_id, bucket=bucket)
-        _sync_runtime_config(
-            api,
-            space_id=args.space_id,
-            runtime_token=runtime_token,
-            bucket=bucket,
-        )
+        current_runtime = api.get_space_runtime(repo_id=args.space_id)
+        _assert_cpu_basic(current_runtime)
+        _sync_runtime_config(api, space_id=args.space_id, runtime_token=runtime_token, bucket=bucket)
 
         space_info = api.repo_info(repo_id=args.space_id, repo_type="space")
         commit = api.upload_folder(
@@ -345,7 +308,7 @@ def main() -> int:
             path_in_repo=".",
             delete_patterns=["*", "**/*"],
             parent_commit=space_info.sha,
-            commit_message=f"Direct deploy Customer AI {manifest['source_sha']} KB {bucket['build_id']}",
+            commit_message=f"Deploy free local 4B+4B+8B {manifest['source_sha']} KB {bucket['build_id']}",
         )
 
         remote = set(api.list_repo_files(repo_id=args.space_id, repo_type="space"))
@@ -358,17 +321,11 @@ def main() -> int:
                 f"space_file_mismatch unexpected={unexpected} missing={missing} embedded_kb={embedded_kb}"
             )
 
-        api.restart_space(
-            repo_id=args.space_id,
-            factory_reboot=not args.no_factory_reboot,
-        )
-        runtime = api.wait_for_space(
-            repo_id=args.space_id,
-            timeout=args.wait_timeout,
-            poll_interval=5.0,
-        )
+        api.restart_space(repo_id=args.space_id, factory_reboot=not args.no_factory_reboot)
+        runtime = api.wait_for_space(repo_id=args.space_id, timeout=args.wait_timeout, poll_interval=5.0)
         if runtime.stage != "RUNNING":
             raise SystemExit(f"space_not_running stage={runtime.stage!r} hardware={runtime.hardware!r}")
+        _assert_cpu_basic(runtime)
 
         http_evidence = _verify_http(args.space_url, args.origin, args.http_timeout)
         evidence = {
@@ -377,11 +334,12 @@ def main() -> int:
             "source_sha": manifest["source_sha"],
             "kb_bucket_id": bucket["bucket_id"],
             "kb_build_id": bucket["build_id"],
-            "kb_mount_path": bucket["mount_path"],
-            "kb_active_pointer": bucket["active_pointer"],
             "kb_active_canonical_path": active.get("canonical_path"),
             "kb_embedded_in_space": False,
             "space_stage": runtime.stage,
+            "space_hardware": str(runtime.hardware),
+            "role_topology": "4B+4B+8B",
+            "inference_provider": "disabled",
             **http_evidence,
         }
         print(json.dumps(evidence, ensure_ascii=False))
