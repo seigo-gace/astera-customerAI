@@ -5,20 +5,15 @@ from collections.abc import Sequence
 
 import httpx
 
-HF_MODEL_4B = "Qwen/Qwen3-4B"  # legacy constant; production role backend must not use it.
-HF_MODEL_8B = "Qwen/Qwen3-8B"
-HF_ALLOWED_MODELS = frozenset({HF_MODEL_8B})
-# Production default is deliberately localhost. This prevents accidental use of
-# Hugging Face Inference Providers and therefore prevents inference-credit burn.
+LOCAL_MODEL_8B = "llm-jp/llm-jp-4-8b-instruct"
+HF_MODEL_8B = LOCAL_MODEL_8B  # compatibility alias
+HF_ALLOWED_MODELS = frozenset({LOCAL_MODEL_8B})
+# Production default is localhost. HF Inference Providers are deliberately not used.
 HF_CHAT_API = "http://127.0.0.1:8081/v1/chat/completions"
 
 
 class HFChatClient:
-    """OpenAI-compatible chat client used by the three role runtimes.
-
-    In production the endpoint is the single local llama.cpp Qwen3-8B process.
-    The class name is retained for compatibility with existing tests/imports.
-    """
+    """OpenAI-compatible role client backed by one local llama.cpp model."""
 
     def __init__(
         self,
@@ -41,19 +36,17 @@ class HFChatClient:
         self,
         messages: Sequence[dict[str, str]],
         *,
-        max_tokens: int = 900,
+        max_tokens: int = 700,
     ) -> dict[str, object]:
         payload = {
             "model": self.model_id,
             "messages": list(messages),
             "response_format": {"type": "json_object"},
             "stream": False,
-            "temperature": 0.2,
-            "top_p": 0.8,
+            "temperature": 0.1,
+            "top_p": 0.9,
             "max_tokens": max_tokens,
         }
-        # Local llama.cpp does not require auth. Keep the header only for an
-        # explicitly configured non-local compatibility endpoint.
         headers = {}
         if self._token and not self.api_url.startswith(("http://127.0.0.1", "http://localhost")):
             headers["authorization"] = f"Bearer {self._token}"
@@ -66,12 +59,7 @@ class HFChatClient:
         content = choices[0].get("message", {}).get("content")
         if not isinstance(content, str) or not content.strip():
             raise RuntimeError("model_empty_content")
-
         text = content.strip()
-        # Qwen3 may emit an empty/short thinking wrapper even when /no_think is
-        # requested through a soft switch. Never expose it; decode only the JSON.
-        if "</think>" in text:
-            text = text.split("</think>", 1)[1].strip()
         first = text.find("{")
         last = text.rfind("}")
         if first >= 0 and last >= first:
