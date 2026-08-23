@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "build_id": "kb-20260814T042741+0900",
+  "plaintext_sha256": "6dc24675c2125cfd6d7959dc7db310af973cefb92e5728f57d1dd9e575481ba5",
+  "ciphertext_sha256": "7791cdcd1751e50f2d856ff4805237d69d07816b4ccd9d2a52a6f4d54f1cc6af",
+  "wrapped_key_b64": "Eht0684Jf9aUXBTxu4j1GapgqBbzjchOwCzQmkyGby1TbXOKP/QslhdnR07M90NQ4a5vK2qIZiC4OXhXBZtI9u4H48Hh9E+U0YvRAWcMjVYkP0WL1WxOSgvlgYp5roF1yXhtIn786VzB8RqqJuO7QoHp5hJizE6zbC9WdJJNxKe8tuUGZ9pA50NoY7XygN/Uny8urUzzlrxS6kpATDfd+yqveS4tCXLtgyjHrUXpVrMWrwiMWne3m4vvp57BIWINYqyGWtxgIpUlEATCcJ+rDbf3y2PqmfE/VXmFlMgyuikFI14w7YOuwKf+Wb8jAVev8oYclXSr8lYrz+wfS9prv1Ty2wS30RnfBb8Hzk6jQiFjj+ZgmkDBWna2xuQUnMIW+ET5v8W5nhNo+E73vXk0ABx5N7VPnxRgHuXx9UNmD4hhtj6IQReag5rhWzW4hAZ4Ra6bV3X22OIHRM0pUh4dMe24mdPwfW7kcUG43VPYjfL1qPKTuW8qTNCoS8RO+XH2",
+  "nonce_b64": "NYduWWPGGZoNcoNm",
+  "aad": "astera-customerai-kb:kb-20260814T042741+0900",
+  "chunks": [
+    {
+      "name": "chunk-00.txt",
+      "sha256": "6b6137cc35dae41ae0bf1afc435d863aff89faf3fd36171728471af15af65d18"
+    },
+    {
+      "name": "chunk-01.txt",
+      "sha256": "a8d324761fb18e5fd3735e69cd4afdd27f5a7e243117c12ff7190c3efa8e187e"
+    },
+    {
+      "name": "chunk-02.txt",
+      "sha256": "928613f5f9e4d3c8e9f356dadcdecdc793ce7d6b8f63f9f76afe2a05d5a49696"
+    },
+    {
+      "name": "chunk-03.txt",
+      "sha256": "7ca6950f24280c300313ea28b4f810bfcf9874ea5b2247bec5a46642b8e106f0"
+    }
+  ]
+}
