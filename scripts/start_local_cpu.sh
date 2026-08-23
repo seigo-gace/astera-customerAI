@@ -1,49 +1,76 @@
 #!/bin/sh
 set -eu
 
-MODEL_PATH="${CUSTOMER_AI_LOCAL_MODEL_PATH:-/models/Qwen3-8B-Q4_K_M.gguf}"
-MODEL_ID="${CUSTOMER_AI_LOCAL_MODEL_ID:-Qwen/Qwen3-8B}"
-LLAMA_PORT="${CUSTOMER_AI_LOCAL_LLAMA_PORT:-8081}"
+MODEL_4B="${CUSTOMER_AI_LOCAL_4B_PATH:-/models/llm-jp-3-3.7b-instruct3-Q4_K_M.gguf}"
+MODEL_8B="${CUSTOMER_AI_LOCAL_8B_PATH:-/models/llm-jp-4-8b-instruct-Q4_K_M.gguf}"
 
-if [ ! -s "$MODEL_PATH" ]; then
-  echo "local_model_missing=$MODEL_PATH" >&2
-  exit 1
-fi
+for path in "$MODEL_4B" "$MODEL_8B"; do
+  if [ ! -s "$path" ]; then
+    echo "local_model_missing=$path" >&2
+    exit 1
+  fi
+done
 
-/opt/llama/llama-server \
-  --model "$MODEL_PATH" \
-  --alias "$MODEL_ID" \
-  --host 127.0.0.1 \
-  --port "$LLAMA_PORT" \
-  --ctx-size 4096 \
-  --threads 2 \
-  --threads-batch 2 \
-  --parallel 1 \
-  --jinja \
-  > /tmp/llama-server.log 2>&1 &
-LLAMA_PID=$!
+start_server() {
+  name="$1"
+  model="$2"
+  alias="$3"
+  port="$4"
+  threads="$5"
+
+  /opt/llama/llama-server \
+    --model "$model" \
+    --alias "$alias" \
+    --host 127.0.0.1 \
+    --port "$port" \
+    --ctx-size 2048 \
+    --threads "$threads" \
+    --threads-batch "$threads" \
+    --parallel 1 \
+    --jinja \
+    > "/tmp/${name}.log" 2>&1 &
+  echo $!
+}
+
+# Required topology: two independent 4B runtimes plus one independent 8B runtime.
+PID_CONSTRUCTIVE=$(start_server constructive "$MODEL_4B" "llm-jp/llm-jp-3-3.7b-instruct3" 8081 1)
+PID_ADVERSARIAL=$(start_server adversarial "$MODEL_4B" "llm-jp/llm-jp-3-3.7b-instruct3" 8082 1)
+PID_EVIDENCE=$(start_server evidence "$MODEL_8B" "llm-jp/llm-jp-4-8b-instruct" 8083 1)
+
+check_alive() {
+  pid="$1"
+  name="$2"
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "local_llama_server_exited=$name" >&2
+    tail -200 "/tmp/${name}.log" >&2 || true
+    exit 1
+  fi
+}
 
 ready=0
 i=0
-while [ "$i" -lt 600 ]; do
-  if curl -fsS "http://127.0.0.1:${LLAMA_PORT}/health" >/dev/null 2>&1; then
+while [ "$i" -lt 900 ]; do
+  check_alive "$PID_CONSTRUCTIVE" constructive
+  check_alive "$PID_ADVERSARIAL" adversarial
+  check_alive "$PID_EVIDENCE" evidence
+  if curl -fsS http://127.0.0.1:8081/health >/dev/null 2>&1 \
+    && curl -fsS http://127.0.0.1:8082/health >/dev/null 2>&1 \
+    && curl -fsS http://127.0.0.1:8083/health >/dev/null 2>&1; then
     ready=1
     break
-  fi
-  if ! kill -0 "$LLAMA_PID" 2>/dev/null; then
-    echo "local_llama_server_exited" >&2
-    cat /tmp/llama-server.log >&2 || true
-    exit 1
   fi
   i=$((i + 1))
   sleep 1
 done
 
 if [ "$ready" -ne 1 ]; then
-  echo "local_llama_server_not_ready" >&2
-  tail -200 /tmp/llama-server.log >&2 || true
+  echo "local_role_models_not_ready" >&2
+  for name in constructive adversarial evidence; do
+    echo "--- ${name} ---" >&2
+    tail -100 "/tmp/${name}.log" >&2 || true
+  done
   exit 1
 fi
 
-echo "LOCAL_LLM_READY=model:${MODEL_ID}:port:${LLAMA_PORT}:provider:none"
+echo "LOCAL_ROLE_MODELS_READY=constructive:4B@8081,adversarial:4B@8082,evidence:8B@8083,provider:none"
 exec uvicorn app:app --host 0.0.0.0 --port "${PORT:-7860}"
