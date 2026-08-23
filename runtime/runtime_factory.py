@@ -4,7 +4,14 @@ from dataclasses import dataclass
 
 import httpx
 
-from .hf_client import HFChatClient, HF_CHAT_API, HF_MODEL_4B, HF_MODEL_8B
+from .hf_client import (
+    HFChatClient,
+    HF_CHAT_API_ADVERSARIAL,
+    HF_CHAT_API_CONSTRUCTIVE,
+    HF_CHAT_API_EVIDENCE,
+    HF_MODEL_4B,
+    HF_MODEL_8B,
+)
 from .integration import DialogueIntegrator
 from .internal_core import CustomerAIInternalCore
 from .kb_search import LocalHybridKnowledgeStore
@@ -17,8 +24,6 @@ from .skill_runtime import SkillRegistry
 from .state import StateStore
 from .task_decomposition import TaskDecomposer
 from .writing_skills import default_writing_skills
-
-LOCAL_EVIDENCE_API = "http://127.0.0.1:8083/v1/chat/completions"
 
 
 @dataclass(frozen=True)
@@ -34,9 +39,10 @@ class InternalRuntimeDependencies:
     constructive_model_id: str = HF_MODEL_4B
     adversarial_model_id: str = HF_MODEL_4B
     evidence_model_id: str = HF_MODEL_8B
-    hf_api_url: str = HF_CHAT_API
-    evidence_api_url: str = LOCAL_EVIDENCE_API
-    timeout_seconds: float = 300.0
+    constructive_api_url: str = HF_CHAT_API_CONSTRUCTIVE
+    adversarial_api_url: str = HF_CHAT_API_ADVERSARIAL
+    evidence_api_url: str = HF_CHAT_API_EVIDENCE
+    timeout_seconds: float = 600.0
 
 
 def _canonical_store(deps: InternalRuntimeDependencies):
@@ -60,22 +66,18 @@ def _role_pool(deps: InternalRuntimeDependencies):
     if deps.evidence_model_id != HF_MODEL_8B:
         raise ValueError("evidence_model_drift")
 
-    token = deps.hf_token or ""
-    if not token.strip():
-        raise ValueError("hf_token_required")
-
     shared_http = httpx.AsyncClient(timeout=deps.timeout_seconds)
     clients = {
         RoleName.CONSTRUCTIVE: HFChatClient(
-            token=token,
+            token="",
             model_id=deps.constructive_model_id,
-            api_url=deps.hf_api_url,
+            api_url=deps.constructive_api_url,
             client=shared_http,
         ),
         RoleName.ADVERSARIAL: HFChatClient(
-            token=token,
+            token="",
             model_id=deps.adversarial_model_id,
-            api_url=deps.hf_api_url,
+            api_url=deps.adversarial_api_url,
             client=shared_http,
         ),
         RoleName.EVIDENCE_BOUND: HFChatClient(
