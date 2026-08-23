@@ -5,27 +5,34 @@ from collections.abc import Sequence
 
 import httpx
 
-LOCAL_MODEL_8B = "llm-jp/llm-jp-4-8b-instruct"
-HF_MODEL_8B = LOCAL_MODEL_8B  # compatibility alias
-HF_ALLOWED_MODELS = frozenset({LOCAL_MODEL_8B})
-# Production default is localhost. HF Inference Providers are deliberately not used.
-HF_CHAT_API = "http://127.0.0.1:8081/v1/chat/completions"
+HF_MODEL_4B = "llm-jp/llm-jp-3-3.7b-instruct"
+HF_MODEL_8B = "llm-jp/llm-jp-4-8b-instruct"
+HF_ALLOWED_MODELS = frozenset({HF_MODEL_4B, HF_MODEL_8B})
+
+# Local-only OpenAI-compatible llama.cpp endpoints. Production must not use
+# Hugging Face Inference Providers, so these defaults are loopback addresses.
+HF_CHAT_API_CONSTRUCTIVE = "http://127.0.0.1:8081/v1/chat/completions"
+HF_CHAT_API_ADVERSARIAL = "http://127.0.0.1:8082/v1/chat/completions"
+HF_CHAT_API_EVIDENCE = "http://127.0.0.1:8083/v1/chat/completions"
+HF_CHAT_API = HF_CHAT_API_CONSTRUCTIVE  # compatibility alias only
 
 
 class HFChatClient:
-    """OpenAI-compatible role client backed by one local llama.cpp model."""
+    """OpenAI-compatible role client backed by a local llama.cpp process."""
 
     def __init__(
         self,
         *,
         token: str,
         model_id: str,
-        api_url: str = HF_CHAT_API,
+        api_url: str,
         timeout_seconds: float = 300.0,
         client: httpx.AsyncClient | None = None,
     ):
         if model_id not in HF_ALLOWED_MODELS:
             raise ValueError(f"model_drift:{model_id}")
+        if not api_url.startswith(("http://127.0.0.1", "http://localhost")):
+            raise ValueError("paid_or_remote_inference_endpoint_forbidden")
         self.model_id = model_id
         self.api_url = api_url
         self._token = token.strip()
@@ -47,10 +54,7 @@ class HFChatClient:
             "top_p": 0.9,
             "max_tokens": max_tokens,
         }
-        headers = {}
-        if self._token and not self.api_url.startswith(("http://127.0.0.1", "http://localhost")):
-            headers["authorization"] = f"Bearer {self._token}"
-        response = await self._client.post(self.api_url, headers=headers, json=payload)
+        response = await self._client.post(self.api_url, json=payload)
         response.raise_for_status()
         body = response.json()
         choices = body.get("choices") or []
