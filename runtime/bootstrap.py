@@ -3,7 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
-from .hf_client import HF_CHAT_API, HF_MODEL_8B
+from .hf_client import (
+    HF_CHAT_API_ADVERSARIAL,
+    HF_CHAT_API_CONSTRUCTIVE,
+    HF_CHAT_API_EVIDENCE,
+    HF_MODEL_4B,
+    HF_MODEL_8B,
+)
 from .japanese_skills import JapaneseShortQASkillPack
 from .runtime_factory import InternalRuntimeDependencies, build_internal_core
 from .service import CustomerAIWork
@@ -19,12 +25,14 @@ class RuntimeDependencies:
     kb_generation_id: str | None = None
     hf_token: str | None = None
     role_pool: object | None = None
-    shared_head: object | None = None  # compatibility injection only; not a single-role contract
+    shared_head: object | None = None
     max_targeted_retry: int = 1
-    constructive_model_id: str = HF_MODEL_8B
-    adversarial_model_id: str = HF_MODEL_8B
+    constructive_model_id: str = HF_MODEL_4B
+    adversarial_model_id: str = HF_MODEL_4B
     evidence_model_id: str = HF_MODEL_8B
-    hf_api_url: str = HF_CHAT_API
+    constructive_api_url: str = HF_CHAT_API_CONSTRUCTIVE
+    adversarial_api_url: str = HF_CHAT_API_ADVERSARIAL
+    evidence_api_url: str = HF_CHAT_API_EVIDENCE
     timeout_seconds: float = 300.0
 
 
@@ -51,7 +59,9 @@ def build_work(deps: RuntimeDependencies) -> CustomerAIWork:
             constructive_model_id=deps.constructive_model_id,
             adversarial_model_id=deps.adversarial_model_id,
             evidence_model_id=deps.evidence_model_id,
-            hf_api_url=deps.hf_api_url,
+            constructive_api_url=deps.constructive_api_url,
+            adversarial_api_url=deps.adversarial_api_url,
+            evidence_api_url=deps.evidence_api_url,
             timeout_seconds=deps.timeout_seconds,
         )
     )
