@@ -1,0 +1,59 @@
+name: customer-ai-local-model-pin-probe
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  probe:
+    if: github.actor == 'seigo-gace' && github.event.issue.title == '[local-model-pin-probe] customer-ai'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+    steps:
+      - name: Install huggingface_hub
+        run: python -m pip install --quiet 'huggingface_hub>=1.24,<2'
+      - name: Resolve immutable model pins
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' >/tmp/body.txt
+          from huggingface_hub import HfApi
+
+          targets = [
+              ("4B", "mmnga/llm-jp-3-3.7b-instruct3-gguf", "llm-jp-3-3.7b-instruct3-Q4_K_M.gguf"),
+              ("8B", "mmnga-o/llm-jp-4-8b-instruct-gguf", "llm-jp-4-8b-instruct-Q4_K_M.gguf"),
+          ]
+          api = HfApi()
+          print("LOCAL_MODEL_PINS")
+          for role, repo, filename in targets:
+              info = api.model_info(repo_id=repo, files_metadata=True)
+              sibling = next((s for s in info.siblings if s.rfilename == filename), None)
+              if sibling is None:
+                  raise SystemExit(f"missing_file={repo}:{filename}")
+              lfs = getattr(sibling, "lfs", None) or {}
+              sha256 = lfs.get("sha256") or lfs.get("oid")
+              size = lfs.get("size") or getattr(sibling, "size", None)
+              print(f"{role}_REPO={repo}")
+              print(f"{role}_REVISION={info.sha}")
+              print(f"{role}_FILE={filename}")
+              print(f"{role}_SHA256={sha256}")
+              print(f"{role}_SIZE={size}")
+          PY
+          python - <<'PY' >/tmp/result.json
+          import json
+          print(json.dumps({'body': '```\n' + open('/tmp/body.txt', encoding='utf-8').read() + '\n```'}))
+          PY
+          curl --fail-with-body --silent --show-error -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${REPOSITORY}/issues/${ISSUE_NUMBER}/comments" \
+            --data-binary @/tmp/result.json >/dev/null
