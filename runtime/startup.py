@@ -9,8 +9,10 @@ from .bootstrap import RuntimeDependencies, build_work
 from .hf_client import HF_CHAT_API
 from .kb_bucket import (
     HF_KB_ACTIVE_POINTER_DEFAULT,
+    HF_KB_BUCKET_DEFAULT,
     HF_KB_MOUNT_DEFAULT,
     load_mounted_kb_release,
+    load_remote_kb_release,
 )
 from .live_state import EmptyLiveStateProvider, HybridLiveStateProvider
 from .service import CustomerAIWork
@@ -61,6 +63,9 @@ def _production_kb_files(values: Mapping[str, str]) -> tuple[Path, Path | None, 
         values.get("CUSTOMER_AI_KB_ACTIVE_POINTER", "").strip()
         or HF_KB_ACTIVE_POINTER_DEFAULT
     )
+    bucket_id = values.get("CUSTOMER_AI_KB_BUCKET_ID", "").strip() or HF_KB_BUCKET_DEFAULT
+    token = (values.get("HF_TOKEN", "") or values.get("HF_KEY", "")).strip()
+
     try:
         release = load_mounted_kb_release(
             mount_path=mount_path,
@@ -68,7 +73,20 @@ def _production_kb_files(values: Mapping[str, str]) -> tuple[Path, Path | None, 
             pointer_name=pointer_name,
         )
     except ValueError as exc:
-        raise RuntimeNotReady(str(exc)) from exc
+        if str(exc) != "kb_bucket_mount_missing":
+            raise RuntimeNotReady(str(exc)) from exc
+        if not token:
+            raise RuntimeNotReady("hf_token_missing") from exc
+        try:
+            release = load_remote_kb_release(
+                bucket_id=bucket_id,
+                token=token,
+                expected_build_id=build_id,
+                pointer_name=pointer_name,
+            )
+        except ValueError as remote_exc:
+            raise RuntimeNotReady(str(remote_exc)) from remote_exc
+
     return (
         release.canonical_path,
         release.current_facts_path,
