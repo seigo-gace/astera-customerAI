@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from .hf_client import HFChatClient, HF_CHAT_API, HF_MODEL_4B, HF_MODEL_8B
+from .hf_client import HFChatClient, HF_CHAT_API, HF_MODEL_8B
 from .integration import DialogueIntegrator
 from .internal_core import CustomerAIInternalCore
 from .kb_search import LocalHybridKnowledgeStore
@@ -29,11 +29,11 @@ class InternalRuntimeDependencies:
     hf_token: str | None = None
     role_pool: object | None = None
     max_targeted_retry: int = 1
-    constructive_model_id: str = HF_MODEL_4B
-    adversarial_model_id: str = HF_MODEL_4B
+    constructive_model_id: str = HF_MODEL_8B
+    adversarial_model_id: str = HF_MODEL_8B
     evidence_model_id: str = HF_MODEL_8B
     hf_api_url: str = HF_CHAT_API
-    timeout_seconds: float = 30.0
+    timeout_seconds: float = 300.0
 
 
 def _canonical_store(deps: InternalRuntimeDependencies):
@@ -50,35 +50,26 @@ def _canonical_store(deps: InternalRuntimeDependencies):
 def _role_pool(deps: InternalRuntimeDependencies):
     if deps.role_pool is not None:
         return deps.role_pool
-    if deps.constructive_model_id != HF_MODEL_4B:
-        raise ValueError("constructive_model_drift")
-    if deps.adversarial_model_id != HF_MODEL_4B:
-        raise ValueError("adversarial_model_drift")
-    if deps.evidence_model_id != HF_MODEL_8B:
-        raise ValueError("evidence_model_drift")
-    token = deps.hf_token or ""
-    if not token.strip():
-        raise ValueError("hf_token_required")
+    expected = HF_MODEL_8B
+    configured = {
+        "constructive": deps.constructive_model_id,
+        "adversarial": deps.adversarial_model_id,
+        "evidence_bound": deps.evidence_model_id,
+    }
+    drift = {key: value for key, value in configured.items() if value != expected}
+    if drift:
+        raise ValueError(f"local_8b_model_drift:{drift}")
+
+    # One local 8B model instance, three logical role clients, one shared HTTP pool.
     shared_http = httpx.AsyncClient(timeout=deps.timeout_seconds)
     clients = {
-        RoleName.CONSTRUCTIVE: HFChatClient(
-            token=token,
-            model_id=deps.constructive_model_id,
+        role: HFChatClient(
+            token="",
+            model_id=expected,
             api_url=deps.hf_api_url,
             client=shared_http,
-        ),
-        RoleName.ADVERSARIAL: HFChatClient(
-            token=token,
-            model_id=deps.adversarial_model_id,
-            api_url=deps.hf_api_url,
-            client=shared_http,
-        ),
-        RoleName.EVIDENCE_BOUND: HFChatClient(
-            token=token,
-            model_id=deps.evidence_model_id,
-            api_url=deps.hf_api_url,
-            client=shared_http,
-        ),
+        )
+        for role in RoleName
     }
     return ThreeRoleModelPool(clients)
 
