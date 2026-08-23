@@ -125,10 +125,9 @@ def create_work_from_environment(
     else:
         live_provider = EmptyLiveStateProvider()
 
-    # HF token is retained only for private KB bucket access. Model inference is local-only.
+    # The HF token is needed only when the private KB bucket must be read remotely.
+    # Local role inference never uses the token.
     token = (values.get("HF_TOKEN", "") or values.get("HF_KEY", "")).strip()
-    if role_pool is None and not token:
-        raise RuntimeNotReady("hf_token_missing")
 
     try:
         fuzzy_threshold = float(values.get("CUSTOMER_AI_JA_FUZZY_THRESHOLD", "90"))
