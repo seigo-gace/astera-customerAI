@@ -15,6 +15,14 @@ HF_CHAT_API_EVIDENCE = "http://127.0.0.1:8083/v1/chat/completions"
 HF_CHAT_API = HF_CHAT_API_CONSTRUCTIVE  # compatibility alias only
 
 
+def _default_local_url(model_id: str) -> str:
+    if model_id == HF_MODEL_4B:
+        return HF_CHAT_API_CONSTRUCTIVE
+    if model_id == HF_MODEL_8B:
+        return HF_CHAT_API_EVIDENCE
+    raise ValueError(f"model_drift:{model_id}")
+
+
 class HFChatClient:
     """Role-scoped OpenAI-compatible client backed only by local llama.cpp.
 
@@ -25,18 +33,19 @@ class HFChatClient:
     def __init__(
         self,
         *,
-        token: str,
+        token: str = "",
         model_id: str,
-        api_url: str,
+        api_url: str | None = None,
         timeout_seconds: float = 600.0,
         client: httpx.AsyncClient | None = None,
     ):
         if model_id not in HF_ALLOWED_MODELS:
             raise ValueError(f"model_drift:{model_id}")
-        if not api_url.startswith(("http://127.0.0.1", "http://localhost")):
+        resolved_url = (api_url or _default_local_url(model_id)).strip()
+        if not resolved_url.startswith(("http://127.0.0.1", "http://localhost")):
             raise ValueError("remote_inference_endpoint_forbidden")
         self.model_id = model_id
-        self.api_url = api_url
+        self.api_url = resolved_url
         self._owned = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout_seconds)
 
