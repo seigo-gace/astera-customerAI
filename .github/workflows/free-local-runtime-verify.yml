@@ -18,6 +18,7 @@ jobs:
       REPOSITORY: ${{ github.repository }}
       ISSUE_NUMBER: ${{ github.event.issue.number }}
       CUSTOMER_AI_KB_BUILD_ID: kb-20260814T042741+0900
+      PYTHONPATH: .
     steps:
       - uses: actions/checkout@v4
         with:
@@ -31,7 +32,10 @@ jobs:
       - name: Compile
         id: compile
         continue-on-error: true
-        run: python -m compileall -q app.py runtime scripts/deploy_hf_direct.py 2>&1 | tee /tmp/compile.log
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m compileall -q app.py runtime scripts/deploy_hf_direct.py 2>&1 | tee /tmp/compile.log
 
       - name: Guard against paid inference routes
         id: guard
@@ -40,7 +44,7 @@ jobs:
         run: |
           set -o pipefail
           {
-            if grep -R -nE 'router\.huggingface\.co|InferenceClient|InferenceEndpoint' app.py runtime config Dockerfile scripts/start_local_cpu.sh; then
+            if grep -R --exclude-dir='__pycache__' --exclude='*.pyc' -nE 'router\.huggingface\.co|InferenceClient|InferenceEndpoint' app.py runtime config Dockerfile scripts/start_local_cpu.sh; then
               echo 'paid_inference_route_detected'
               exit 1
             fi
@@ -68,12 +72,18 @@ jobs:
       - name: Unit tests
         id: tests
         continue-on-error: true
-        run: pytest -q 2>&1 | tee /tmp/tests.log
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q 2>&1 | tee /tmp/tests.log
 
       - name: Deploy payload dry-run
         id: dryrun
         continue-on-error: true
-        run: python scripts/deploy_hf_direct.py --repo-root . --dry-run 2>&1 | tee /tmp/dryrun.log
+        shell: bash
+        run: |
+          set -o pipefail
+          python scripts/deploy_hf_direct.py --repo-root . --dry-run 2>&1 | tee /tmp/dryrun.log
 
       - name: Report verification
         if: always()
