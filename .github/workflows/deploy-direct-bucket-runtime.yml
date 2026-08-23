@@ -1,0 +1,215 @@
+name: customer-ai-direct-bucket-runtime-deploy
+
+on:
+  issues:
+    types: [opened, reopened, edited]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  deploy:
+    if: github.actor == 'seigo-gace' && github.event.issue.title == '[deploy-direct-bucket] customer-ai'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HF_TOKEN_PRIMARY: ${{ secrets.HF_TOKEN }}
+      HF_TOKEN_FALLBACK: ${{ secrets.HF_KEY }}
+      REPOSITORY: ${{ github.repository }}
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+      GH_TOKEN: ${{ github.token }}
+      SPACE_ID: G-ACE/astera-customerAI
+      SPACE_URL: https://g-ace-astera-customerai.hf.space
+      KB_BUCKET_ID: G-ACE/astera-customerai-kb
+      KB_BUILD_ID: kb-20260814T042741+0900
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Install deploy tooling
+        run: python -m pip install --quiet --upgrade 'huggingface_hub>=1.24,<2' 'httpx>=0.28,<1'
+
+      - name: Select G-ACE HF token
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          selected=None
+          for label,key in (("HF_TOKEN","HF_TOKEN_PRIMARY"),("HF_KEY","HF_TOKEN_FALLBACK")):
+              token=os.environ.get(key,"").strip()
+              if not token: continue
+              try: who=HfApi(token=token).whoami()
+              except Exception: continue
+              if str(who.get('name') or '')=='G-ACE': selected=(label,token)
+          if selected is None: raise SystemExit('no_gace_hf_token')
+          label,token=selected
+          print('::add-mask::'+token)
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as f:
+              f.write('HF_TOKEN='+token+'\n')
+          print('HF_AUTH_SELECTED='+label)
+          PY
+
+      - name: Verify exact KB bucket and configure Space
+        id: configure
+        shell: bash
+        run: |
+          set -euo pipefail
+          { python - <<'PY'
+          import json, os
+          from huggingface_hub import HfApi, HfFileSystem, bucket_info
+
+          token=os.environ['HF_TOKEN']
+          bucket=os.environ['KB_BUCKET_ID']
+          build=os.environ['KB_BUILD_ID']
+          space=os.environ['SPACE_ID']
+          info=bucket_info(bucket,token=token)
+          if not info.private: raise SystemExit('kb_bucket_not_private')
+          fs=HfFileSystem(token=token)
+          base=f'hf://buckets/{bucket}'
+          with fs.open(base+'/active.json','r',encoding='utf-8') as f:
+              active=json.load(f)
+          if str(active.get('build_id') or '') != build:
+              raise SystemExit(f"active_build_mismatch={active.get('build_id')}")
+          for key in ('canonical_path','manifest_path'):
+              path=str(active.get(key) or '')
+              if not path or not fs.exists(base+'/'+path):
+                  raise SystemExit('kb_active_path_missing='+key)
+
+          api=HfApi(token=token)
+          existing=api.get_space_secrets(space)
+          if 'HF_TOKEN' not in existing and 'HF_KEY' not in existing:
+              api.add_space_secret(space,key='HF_TOKEN',value=token,description='Customer AI runtime private KB and model access')
+          vars={
+              'CUSTOMER_AI_KB_BUCKET_ID':bucket,
+              'CUSTOMER_AI_KB_BUILD_ID':build,
+              'CUSTOMER_AI_KB_MOUNT_PATH':'/data/customer-ai',
+              'CUSTOMER_AI_KB_ACTIVE_POINTER':'active.json',
+          }
+          for k,v in vars.items(): api.add_space_variable(space,key=k,value=v)
+          print(json.dumps({'bucket':bucket,'private':True,'build':build,'files':info.total_files,'space':space},ensure_ascii=False))
+          PY
+          } 2>&1 | tee /tmp/configure.log
+          echo 'configure_ok=1' >> "$GITHUB_OUTPUT"
+
+      - name: Deploy current runtime without KB embedding
+        id: deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          { python - <<'PY'
+          import json, os, shutil, tempfile
+          from pathlib import Path
+          from huggingface_hub import HfApi
+
+          token=os.environ['HF_TOKEN']
+          space=os.environ['SPACE_ID']
+          root=Path('.').resolve()
+          required_files=['app.py','Dockerfile','requirements.txt','pyproject.toml','.dockerignore']
+          required_dirs=['config','runtime']
+          with tempfile.TemporaryDirectory(prefix='customer-ai-deploy-') as td:
+              stage=Path(td)
+              for name in required_files:
+                  shutil.copy2(root/name,stage/name)
+              for name in required_dirs:
+                  shutil.copytree(root/name,stage/name,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
+              body=(root/'README.md').read_text(encoding='utf-8') if (root/'README.md').is_file() else ''
+              (stage/'README.md').write_text('---\ntitle: Astera Customer AI\nsdk: docker\napp_port: 7860\n---\n\n'+body,encoding='utf-8')
+              (stage/'deployment-manifest.json').write_text(json.dumps({
+                  'schema_version':5,
+                  'kb_storage':'huggingface_private_bucket_direct_runtime',
+                  'kb_bucket_id':os.environ['KB_BUCKET_ID'],
+                  'kb_build_id':os.environ['KB_BUILD_ID'],
+                  'kb_embedded_in_space':False,
+              },ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+              if any(p.is_file() and str(p.relative_to(stage)).replace('\\','/').startswith('kb/') for p in stage.rglob('*')):
+                  raise SystemExit('embedded_kb_payload_forbidden')
+              api=HfApi(token=token)
+              before=api.repo_info(repo_id=space,repo_type='space')
+              commit=api.upload_folder(repo_id=space,repo_type='space',folder_path=str(stage),path_in_repo='.',delete_patterns=['*','**/*'],parent_commit=before.sha,commit_message='Deploy direct private KB runtime')
+              remote=set(api.list_repo_files(repo_id=space,repo_type='space'))
+              embedded=[p for p in remote if p.startswith('kb/')]
+              pycache=[p for p in remote if '__pycache__' in p or p.endswith('.pyc')]
+              if embedded: raise SystemExit(f'embedded_kb_remote={embedded}')
+              if pycache: raise SystemExit(f'pycache_remote={pycache}')
+              print('HF_COMMIT='+str(commit.oid))
+          PY
+          } 2>&1 | tee /tmp/deploy.log
+          echo 'deploy_ok=1' >> "$GITHUB_OUTPUT"
+
+      - name: Restart and verify Customer AI
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          { python - <<'PY'
+          import json, os, time
+          import httpx
+          from huggingface_hub import HfApi
+          token=os.environ['HF_TOKEN']
+          space=os.environ['SPACE_ID']
+          base=os.environ['SPACE_URL'].rstrip('/')
+          api=HfApi(token=token)
+          api.restart_space(repo_id=space,factory_reboot=True)
+          runtime=api.wait_for_space(repo_id=space,timeout=900,poll_interval=5)
+          if runtime.stage!='RUNNING': raise SystemExit('space_not_running='+str(runtime.stage))
+          last=None
+          with httpx.Client(timeout=60,follow_redirects=True) as client:
+              for _ in range(60):
+                  try:
+                      h=client.get(base+'/health')
+                      r=client.get(base+'/ready')
+                      last=(h.status_code,h.text[:500],r.status_code,r.text[:1200])
+                      if h.status_code==200 and r.status_code==200:
+                          hb=h.json(); rb=r.json()
+                          if hb.get('status')=='ok' and rb.get('status')=='ready':
+                              break
+                  except Exception as exc:
+                      last=('exception',type(exc).__name__)
+                  time.sleep(5)
+              else:
+                  raise SystemExit('ready_timeout='+repr(last))
+              response=client.post(base+'/respond',headers={'Origin':'https://staging.asterav8.jp','Content-Type':'application/json'},json={
+                  'message':'Asteraとは何ですか？','source':'astera-app','locale':'ja-JP',
+                  'session_id':'session_direct_bucket_gate','message_id':'message_direct_bucket_gate',
+                  'response_mode':'auto','mode_source':'auto','current_path':'/app/new'
+              })
+              if response.status_code!=200: raise SystemExit(f'respond_http={response.status_code}:{response.text[:1000]}')
+              body=response.json()
+              answer=str(body.get('answer') or body.get('clarification') or '').strip()
+              if not answer: raise SystemExit('respond_empty')
+              print(json.dumps({'status':'success','space_stage':runtime.stage,'health':hb,'ready':rb,'respond_status':response.status_code,'answer_preview':answer[:200]},ensure_ascii=False))
+          PY
+          } 2>&1 | tee /tmp/verify.log
+          echo 'verify_ok=1' >> "$GITHUB_OUTPUT"
+
+      - name: Report result
+        if: always()
+        shell: bash
+        env:
+          CONFIGURE_OK: ${{ steps.configure.outputs.configure_ok }}
+          DEPLOY_OK: ${{ steps.deploy.outputs.deploy_ok }}
+          VERIFY_OK: ${{ steps.verify.outputs.verify_ok }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          python - <<'PY' >/tmp/report.txt
+          import os
+          lines=[f"DIRECT_BUCKET_DEPLOY_STATUS={os.environ.get('JOB_STATUS','')}",f"CONFIGURE_OK={os.environ.get('CONFIGURE_OK','0')}",f"DEPLOY_OK={os.environ.get('DEPLOY_OK','0')}",f"VERIFY_OK={os.environ.get('VERIFY_OK','0')}"]
+          for path,label in [('/tmp/configure.log','CONFIGURE'),('/tmp/deploy.log','DEPLOY'),('/tmp/verify.log','VERIFY')]:
+              try:
+                  rows=open(path,encoding='utf-8',errors='replace').read().strip().splitlines()
+                  if rows: lines.append(label+'='+rows[-1][:4000])
+              except Exception: pass
+          print('\n'.join(lines))
+          PY
+          python - <<'PY' >/tmp/result.json
+          import json
+          print(json.dumps({'body':open('/tmp/report.txt',encoding='utf-8').read()}))
+          PY
+          curl --fail-with-body --silent --show-error -X POST -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "https://api.github.com/repos/${REPOSITORY}/issues/${ISSUE_NUMBER}/comments" --data-binary @/tmp/result.json >/dev/null
