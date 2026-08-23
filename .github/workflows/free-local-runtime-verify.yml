@@ -27,57 +27,105 @@ jobs:
           python -m pip install --quiet --upgrade pip
           python -m pip install --quiet -r requirements.txt
           python -m pip install --quiet pytest==9.0.2 pytest-asyncio 'ruff>=0.12,<1'
+
       - name: Compile
-        run: python -m compileall -q app.py runtime scripts/deploy_hf_direct.py
+        id: compile
+        continue-on-error: true
+        run: python -m compileall -q app.py runtime scripts/deploy_hf_direct.py 2>&1 | tee /tmp/compile.log
+
       - name: Guard against paid inference routes
+        id: guard
+        continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
-          if grep -R -nE 'router\.huggingface\.co|InferenceClient|InferenceEndpoint' app.py runtime config Dockerfile scripts/start_local_cpu.sh; then
-            echo 'paid_inference_route_detected' >&2
-            exit 1
-          fi
-          grep -q 'http://127.0.0.1:8081/v1/chat/completions' runtime/hf_client.py
-          grep -q 'http://127.0.0.1:8082/v1/chat/completions' runtime/hf_client.py
-          grep -q 'http://127.0.0.1:8083/v1/chat/completions' runtime/hf_client.py
+          set -o pipefail
+          {
+            if grep -R -nE 'router\.huggingface\.co|InferenceClient|InferenceEndpoint' app.py runtime config Dockerfile scripts/start_local_cpu.sh; then
+              echo 'paid_inference_route_detected'
+              exit 1
+            fi
+            grep -q 'http://127.0.0.1:8081/v1/chat/completions' runtime/hf_client.py
+            grep -q 'http://127.0.0.1:8082/v1/chat/completions' runtime/hf_client.py
+            grep -q 'http://127.0.0.1:8083/v1/chat/completions' runtime/hf_client.py
+            echo 'paid_route_guard=passed'
+          } 2>&1 | tee /tmp/guard.log
+
       - name: Verify required topology and pinned model hashes
+        id: topology
+        continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
-          grep -q 'HF_MODEL_4B = "llm-jp/llm-jp-3-3.7b-instruct3"' runtime/hf_client.py
-          grep -q 'HF_MODEL_8B = "llm-jp/llm-jp-4-8b-instruct"' runtime/hf_client.py
-          test "$(grep -c 'llm-jp/llm-jp-3-3.7b-instruct3' scripts/start_local_cpu.sh)" -ge 2
-          grep -q 'a4a09d2141717a01b44e7a8dbdb28da8c01e9078c8051367cd6a20f7008ef5a8' Dockerfile
-          grep -q 'b6a61b9c8d4e7cb1ae543d8fcf472c9fb9abfc5d48af17f5017ce89c2dc0bd56' Dockerfile
+          set -o pipefail
+          {
+            grep -q 'HF_MODEL_4B = "llm-jp/llm-jp-3-3.7b-instruct3"' runtime/hf_client.py
+            grep -q 'HF_MODEL_8B = "llm-jp/llm-jp-4-8b-instruct"' runtime/hf_client.py
+            test "$(grep -c 'llm-jp/llm-jp-3-3.7b-instruct3' scripts/start_local_cpu.sh)" -ge 2
+            grep -q 'a4a09d2141717a01b44e7a8dbdb28da8c01e9078c8051367cd6a20f7008ef5a8' Dockerfile
+            grep -q 'b6a61b9c8d4e7cb1ae543d8fcf472c9fb9abfc5d48af17f5017ce89c2dc0bd56' Dockerfile
+            echo 'topology=4B+4B+8B pins=passed'
+          } 2>&1 | tee /tmp/topology.log
+
       - name: Unit tests
-        run: pytest -q
+        id: tests
+        continue-on-error: true
+        run: pytest -q 2>&1 | tee /tmp/tests.log
+
       - name: Deploy payload dry-run
-        run: python scripts/deploy_hf_direct.py --repo-root . --dry-run >/tmp/dry-run.json
-      - name: Report success
-        if: success()
+        id: dryrun
+        continue-on-error: true
+        run: python scripts/deploy_hf_direct.py --repo-root . --dry-run 2>&1 | tee /tmp/dryrun.log
+
+      - name: Report verification
+        if: always()
         shell: bash
+        env:
+          COMPILE: ${{ steps.compile.outcome }}
+          GUARD: ${{ steps.guard.outcome }}
+          TOPOLOGY: ${{ steps.topology.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+          DRYRUN: ${{ steps.dryrun.outcome }}
         run: |
-          body='FREE_LOCAL_RUNTIME_VERIFY=success\nTOPOLOGY=4B+4B+8B\nINFERENCE_PROVIDER=disabled\nKB_BUCKET=G-ACE/astera-customerai-kb\nDRY_RUN=passed'
-          python - "$body" <<'PY' >/tmp/result.json
-          import json, sys
-          print(json.dumps({'body': sys.argv[1]}))
+          python - <<'PY' >/tmp/body.txt
+          import os
+          from pathlib import Path
+          outcomes = {k: os.environ[k] for k in ('COMPILE','GUARD','TOPOLOGY','TESTS','DRYRUN')}
+          ok = all(v == 'success' for v in outcomes.values())
+          print('FREE_LOCAL_RUNTIME_VERIFY=' + ('success' if ok else 'failure'))
+          print('TOPOLOGY=4B+4B+8B')
+          print('INFERENCE_PROVIDER=disabled')
+          for k,v in outcomes.items():
+              print(f'{k}={v}')
+          if not ok:
+              for name in ('compile','guard','topology','tests','dryrun'):
+                  p = Path('/tmp') / f'{name}.log'
+                  if p.exists():
+                      text = p.read_text(errors='replace')[-3500:]
+                      print(f'--- {name} tail ---')
+                      print(text)
+          PY
+          python - <<'PY' >/tmp/result.json
+          import json
+          body=open('/tmp/body.txt',encoding='utf-8').read()
+          print(json.dumps({'body': '```\n'+body+'\n```'}))
           PY
           curl --fail-with-body --silent --show-error -X POST \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H 'Accept: application/vnd.github+json' \
             "https://api.github.com/repos/${REPOSITORY}/issues/${ISSUE_NUMBER}/comments" \
             --data-binary @/tmp/result.json >/dev/null
-      - name: Report failure
-        if: failure()
+
+      - name: Fail if any gate failed
+        if: always()
         shell: bash
+        env:
+          COMPILE: ${{ steps.compile.outcome }}
+          GUARD: ${{ steps.guard.outcome }}
+          TOPOLOGY: ${{ steps.topology.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+          DRYRUN: ${{ steps.dryrun.outcome }}
         run: |
-          body='FREE_LOCAL_RUNTIME_VERIFY=failure'
-          python - "$body" <<'PY' >/tmp/result.json
-          import json, sys
-          print(json.dumps({'body': sys.argv[1]}))
-          PY
-          curl --silent --show-error -X POST \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H 'Accept: application/vnd.github+json' \
-            "https://api.github.com/repos/${REPOSITORY}/issues/${ISSUE_NUMBER}/comments" \
-            --data-binary @/tmp/result.json >/dev/null || true
+          test "$COMPILE" = success
+          test "$GUARD" = success
+          test "$TOPOLOGY" = success
+          test "$TESTS" = success
+          test "$DRYRUN" = success
