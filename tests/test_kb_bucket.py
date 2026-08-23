@@ -14,6 +14,8 @@ def _write_release(tmp_path, build_id="kb-test"):
     current.write_text('{"fact_id":"c1","value":"cv","source_id":"s"}\n', encoding="utf-8")
     aliases = release / "aliases.json"
     aliases.write_text('{"Astera":["アステラ"]}\n', encoding="utf-8")
+    manifest = release / "manifest.json"
+    manifest.write_text(json.dumps({"build_id": build_id, "files": []}), encoding="utf-8")
     active = {
         "schema_version": 1,
         "build_id": build_id,
@@ -62,6 +64,7 @@ def test_mounted_storage_bucket_rejects_path_escape(tmp_path):
             {
                 "build_id": "kb-test",
                 "canonical_path": "../outside.jsonl",
+                "manifest_path": "releases/kb-test/manifest.json",
             }
         ),
         encoding="utf-8",
