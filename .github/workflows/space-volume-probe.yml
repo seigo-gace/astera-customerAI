@@ -1,0 +1,70 @@
+name: customer-ai-space-volume-probe
+
+on:
+  issues:
+    types: [opened, reopened, edited]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  probe:
+    if: github.actor == 'seigo-gace' && github.event.issue.title == '[space-volume-probe] customer-ai'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HF_TOKEN_PRIMARY: ${{ secrets.HF_TOKEN }}
+      HF_TOKEN_FALLBACK: ${{ secrets.HF_KEY }}
+      REPOSITORY: ${{ github.repository }}
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Install tooling
+        run: python -m pip install --quiet --upgrade 'huggingface_hub>=1.24,<2'
+      - name: Probe volumes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' >/tmp/probe.txt
+          import json, os
+          from huggingface_hub import HfApi
+          selected=None
+          for label,key in (("HF_TOKEN","HF_TOKEN_PRIMARY"),("HF_KEY","HF_TOKEN_FALLBACK")):
+              token=os.environ.get(key,"").strip()
+              if not token: continue
+              try: who=HfApi(token=token).whoami()
+              except Exception: continue
+              if str(who.get('name') or '')=='G-ACE': selected=(label,token)
+          if selected is None: raise SystemExit('no_gace_hf_token')
+          label,token=selected
+          api=HfApi(token=token)
+          runtime=api.get_space_runtime(repo_id='G-ACE/astera-customerAI')
+          print('AUTH='+label)
+          print('STAGE='+str(runtime.stage))
+          vols=list(getattr(runtime,'volumes',None) or [])
+          print('VOLUME_COUNT='+str(len(vols)))
+          for i,v in enumerate(vols):
+              print(f'VOLUME_{i}_REPR={v!r}')
+              for attr in ('type','source','mount_path','read_only','path','revision'):
+                  print(f'VOLUME_{i}_{attr.upper()}={getattr(v,attr,None)!r}')
+              try: print(f'VOLUME_{i}_DICT='+json.dumps(v.to_dict(),ensure_ascii=False,default=str))
+              except Exception as exc: print(f'VOLUME_{i}_DICT_ERROR={type(exc).__name__}')
+          PY
+      - name: Report
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' >/tmp/result.json
+          import json
+          try: text=open('/tmp/probe.txt',encoding='utf-8',errors='replace').read()
+          except Exception as exc: text='PROBE_MISSING='+type(exc).__name__
+          print(json.dumps({'body':'SPACE_VOLUME_PROBE\n```\n'+text[:30000]+'\n```'}))
+          PY
+          curl --fail-with-body --silent --show-error -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${REPOSITORY}/issues/${ISSUE_NUMBER}/comments" \
+            --data-binary @/tmp/result.json >/dev/null
