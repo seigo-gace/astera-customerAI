@@ -29,7 +29,12 @@ def _write_kb(path):
 
 
 def _write_mounted_release(tmp_path, build_id="kb-test"):
-    canonical = _write_kb(tmp_path / "releases" / build_id / "canonical.jsonl")
+    release_dir = tmp_path / "releases" / build_id
+    canonical = _write_kb(release_dir / "canonical.jsonl")
+    (release_dir / "manifest.json").write_text(
+        json.dumps({"build_id": build_id, "files": []}),
+        encoding="utf-8",
+    )
     (tmp_path / "active.json").write_text(
         json.dumps(
             {
@@ -86,11 +91,10 @@ def test_production_requires_expected_build_id():
         create_work_from_environment({"HF_TOKEN": "test-token"})
 
 
-def test_production_requires_storage_bucket_mount(tmp_path):
-    with pytest.raises(RuntimeNotReady, match="kb_bucket_mount_missing"):
+def test_production_requires_private_bucket_token_when_mount_is_missing(tmp_path):
+    with pytest.raises(RuntimeNotReady, match="hf_token_missing"):
         create_work_from_environment(
             {
-                "HF_TOKEN": "test-token",
                 "CUSTOMER_AI_KB_BUILD_ID": "kb-test",
                 "CUSTOMER_AI_KB_MOUNT_PATH": str(tmp_path / "missing"),
             }
@@ -104,7 +108,6 @@ def test_production_uses_mounted_storage_bucket_not_local_snapshot(tmp_path):
 
     work = create_work_from_environment(
         {
-            "HF_TOKEN": "test-token",
             "CUSTOMER_AI_KB_BUILD_ID": "kb-test",
             "CUSTOMER_AI_KB_MOUNT_PATH": str(mount),
             "CUSTOMER_AI_KB_SNAPSHOT_PATH": str(tmp_path / "must-not-be-used.jsonl"),
@@ -123,22 +126,21 @@ def test_production_rejects_active_pointer_build_mismatch(tmp_path):
     with pytest.raises(RuntimeNotReady, match="kb_active_build_id_mismatch"):
         create_work_from_environment(
             {
-                "HF_TOKEN": "test-token",
                 "CUSTOMER_AI_KB_BUILD_ID": "kb-expected",
                 "CUSTOMER_AI_KB_MOUNT_PATH": str(mount),
             }
         )
 
 
-def test_production_requires_model_token_after_bucket_is_valid(tmp_path):
+def test_production_local_models_do_not_require_hf_inference_token_when_mount_is_valid(tmp_path):
     mount = tmp_path / "mounted-bucket"
     mount.mkdir()
     _write_mounted_release(mount, build_id="kb-test")
 
-    with pytest.raises(RuntimeNotReady, match="hf_token_missing"):
-        create_work_from_environment(
-            {
-                "CUSTOMER_AI_KB_BUILD_ID": "kb-test",
-                "CUSTOMER_AI_KB_MOUNT_PATH": str(mount),
-            }
-        )
+    work = create_work_from_environment(
+        {
+            "CUSTOMER_AI_KB_BUILD_ID": "kb-test",
+            "CUSTOMER_AI_KB_MOUNT_PATH": str(mount),
+        }
+    )
+    assert isinstance(work, CustomerAIWork)
