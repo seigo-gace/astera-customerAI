@@ -1,0 +1,306 @@
+name: customer-ai-public-kb-autodiscover-deploy
+
+on:
+  issues:
+    types: [opened, reopened, edited]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  finalize:
+    if: github.actor == 'seigo-gace' && github.event.issue.title == '[kb-public-autodiscover] customer-ai'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HF_TOKEN_PRIMARY: ${{ secrets.HF_TOKEN }}
+      HF_TOKEN_FALLBACK: ${{ secrets.HF_KEY }}
+      HF_SPACE_ID: G-ACE/astera-customerAI
+      KB_BUILD_ID: kb-20260814T042741+0900
+      CUSTOMER_AI_KB_BUILD_ID: kb-20260814T042741+0900
+      CUSTOMER_AI_KB_MOUNT_PATH: /data/customer-ai
+      CUSTOMER_AI_KB_ACTIVE_POINTER: active.json
+      REPOSITORY: ${{ github.repository }}
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Install HF tooling
+        run: python -m pip install --quiet --upgrade 'huggingface_hub>=1.24,<2' 'httpx>=0.27,<1'
+
+      - name: Select G-ACE HF token
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          selected = None
+          for label, key in (("HF_TOKEN", "HF_TOKEN_PRIMARY"), ("HF_KEY", "HF_TOKEN_FALLBACK")):
+              token = os.environ.get(key, "").strip()
+              if not token:
+                  continue
+              try:
+                  who = HfApi(token=token).whoami()
+              except Exception:
+                  continue
+              if str(who.get("name") or "") == "G-ACE":
+                  selected = (label, token)
+          if selected is None:
+              raise SystemExit("no_gace_hf_token")
+          label, token = selected
+          print("::add-mask::" + token)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              f.write("HF_TOKEN=" + token + "\n")
+          print("HF_AUTH_SELECTED=" + label)
+          PY
+
+      - name: Autodiscover uploaded public KB bucket
+        id: discover
+        shell: bash
+        run: |
+          set -euo pipefail
+          { python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from huggingface_hub import list_buckets, list_bucket_tree
+
+          token = os.environ["HF_TOKEN"]
+          build_id = os.environ["KB_BUILD_ID"]
+          exact_zip_names = {
+              f"astera-customerai-kb-public-storage-{build_id}.zip",
+              f"astera-customerai-kb-{build_id}.zip",
+              "astera-customerai-kb-kb-20260814T042741+0900.zip",
+          }
+          seen = {}
+          for namespace in ("G-ACE", "G-ACEinc"):
+              try:
+                  buckets = list(list_buckets(namespace=namespace, token=token))
+              except Exception as exc:
+                  print(f"NAMESPACE_LIST_FAILED={namespace}:{type(exc).__name__}")
+                  continue
+              for b in buckets:
+                  if bool(b.private):
+                      continue
+                  paths = []
+                  try:
+                      paths = [str(x.path) for x in list_bucket_tree(b.id, token=token)]
+                  except Exception as exc:
+                      print(f"BUCKET_TREE_FAILED={b.id}:{type(exc).__name__}")
+                      continue
+                  basenames = {p.rstrip('/').split('/')[-1] for p in paths}
+                  score = 0
+                  reasons = []
+                  if basenames & exact_zip_names:
+                      score += 100
+                      reasons.append("exact_zip")
+                  if "active.json" in basenames:
+                      score += 40
+                      reasons.append("active")
+                  if any(p.startswith(f"releases/{build_id}") for p in paths):
+                      score += 80
+                      reasons.append("release")
+                  if any(name.lower().endswith('.zip') and 'customer' in name.lower() for name in basenames):
+                      score += 20
+                      reasons.append("customer_zip")
+                  print(f"PUBLIC_BUCKET={b.id} FILES={getattr(b,'total_files',None)} SCORE={score} REASONS={','.join(reasons)}")
+                  if score:
+                      seen[b.id] = {"score": score, "paths": paths, "reasons": reasons}
+
+          if not seen:
+              raise SystemExit("no_public_bucket_with_customer_kb_found")
+          best_score = max(v["score"] for v in seen.values())
+          best = [k for k,v in seen.items() if v["score"] == best_score]
+          if len(best) != 1:
+              raise SystemExit(f"ambiguous_public_kb_buckets={best}")
+          bucket_id = best[0]
+          evidence = {"bucket_id": bucket_id, "score": best_score, "reasons": seen[bucket_id]["reasons"]}
+          Path('/tmp/discover.json').write_text(json.dumps(evidence), encoding='utf-8')
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as f:
+              f.write('HF_BUCKET_ID=' + bucket_id + '\n')
+              f.write('CUSTOMER_AI_KB_BUCKET_ID=' + bucket_id + '\n')
+          print('SELECTED_PUBLIC_BUCKET=' + bucket_id)
+          PY
+          } 2>&1 | tee /tmp/discover.log
+          echo 'discover_ok=1' >> "$GITHUB_OUTPUT"
+
+      - name: Normalize and validate uploaded KB
+        id: kb
+        shell: bash
+        run: |
+          set -euo pipefail
+          { python - <<'PY'
+          import hashlib, io, json, os, tempfile, zipfile
+          from pathlib import Path
+          from huggingface_hub import HfFileSystem, batch_bucket_files, bucket_info, list_bucket_tree
+
+          bucket_id = os.environ['HF_BUCKET_ID']
+          build_id = os.environ['KB_BUILD_ID']
+          token = os.environ['HF_TOKEN']
+          info = bucket_info(bucket_id, token=token)
+          if info.private:
+              raise SystemExit('selected_bucket_not_public')
+
+          fs = HfFileSystem(token=token)
+          base = f"hf://buckets/{bucket_id}"
+          release_root = f"releases/{build_id}"
+          required = [
+              'canonical_stable.jsonl','current_facts.jsonl','retrieval_documents.jsonl',
+              'raw_facts.jsonl','quarantine.jsonl','excluded.jsonl','kb_snapshot.sqlite3',
+              'validation.json','manifest.json'
+          ]
+          def exists(path): return fs.exists(f"{base}/{path}")
+          def readb(path):
+              with fs.open(f"{base}/{path}", 'rb') as f: return f.read()
+
+          normalized = False
+          if not all(exists(f"{release_root}/{n}") for n in required):
+              paths = [str(x.path) for x in list_bucket_tree(bucket_id, token=token)]
+              zips = [p for p in paths if p.lower().endswith('.zip')]
+              preferred = [
+                  f"astera-customerai-kb-public-storage-{build_id}.zip",
+                  f"astera-customerai-kb-{build_id}.zip",
+                  'astera-customerai-kb-kb-20260814T042741+0900.zip',
+              ]
+              chosen = next((p for name in preferred for p in zips if p.rstrip('/').split('/')[-1] == name), None)
+              if chosen is None and len(zips) == 1:
+                  chosen = zips[0]
+              if chosen is None:
+                  raise SystemExit(f"uploaded_zip_not_resolved={zips}")
+              print('USING_UPLOADED_ZIP=' + chosen)
+              payload = readb(chosen)
+              with tempfile.TemporaryDirectory(prefix='kb-public-') as td:
+                  root = Path(td)
+                  with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+                      for entry in zf.infolist():
+                          target = (root / entry.filename).resolve()
+                          if root.resolve() not in target.parents and target != root.resolve():
+                              raise SystemExit('zip_path_escape')
+                      zf.extractall(root)
+                  wrapped = root / 'releases' / build_id
+                  release = wrapped if wrapped.is_dir() else root
+                  missing = [n for n in required if not (release/n).is_file()]
+                  if missing:
+                      raise SystemExit(f"zip_release_missing={missing}")
+                  manifest = json.loads((release/'manifest.json').read_text(encoding='utf-8'))
+                  if str(manifest.get('build_id') or '') != build_id:
+                      raise SystemExit('zip_build_id_mismatch')
+                  for item in manifest.get('files', []):
+                      p = release / str(item['path'])
+                      raw = p.read_bytes()
+                      if len(raw) != int(item['bytes']) or hashlib.sha256(raw).hexdigest() != str(item['sha256']):
+                          raise SystemExit(f"zip_manifest_mismatch={p.name}")
+                  validation = json.loads((release/'validation.json').read_text(encoding='utf-8'))
+                  if validation.get('passed') is not True:
+                      raise SystemExit('zip_validation_not_passed')
+                  counts = validation.get('counts') or {}
+                  for k,v in {'canonical_stable':493,'current_facts':31,'retrieval_documents':524}.items():
+                      if int(counts.get(k,-1)) != v:
+                          raise SystemExit(f"zip_count_mismatch={k}:{counts.get(k)}")
+                  batch_bucket_files(bucket_id, add=[(release/n, f"{release_root}/{n}") for n in required], token=token)
+              normalized = True
+
+          manifest = json.loads(readb(f"{release_root}/manifest.json").decode('utf-8'))
+          if str(manifest.get('build_id') or '') != build_id:
+              raise SystemExit('remote_build_id_mismatch')
+          for item in manifest.get('files', []):
+              path = f"{release_root}/{item['path']}"
+              raw = readb(path)
+              if len(raw) != int(item['bytes']) or hashlib.sha256(raw).hexdigest() != str(item['sha256']):
+                  raise SystemExit(f"remote_manifest_mismatch={path}")
+          validation = json.loads(readb(f"{release_root}/validation.json").decode('utf-8'))
+          if validation.get('passed') is not True:
+              raise SystemExit('remote_validation_not_passed')
+          counts = validation.get('counts') or {}
+          for k,v in {'canonical_stable':493,'current_facts':31,'retrieval_documents':524}.items():
+              if int(counts.get(k,-1)) != v:
+                  raise SystemExit(f"remote_count_mismatch={k}:{counts.get(k)}")
+
+          active = {
+              'schema_version':1,'build_id':build_id,
+              'canonical_path':f'{release_root}/canonical_stable.jsonl',
+              'current_facts_path':f'{release_root}/current_facts.jsonl',
+              'aliases_path':None,'manifest_path':f'{release_root}/manifest.json'
+          }
+          active_bytes = (json.dumps(active, ensure_ascii=False, indent=2)+'\n').encode('utf-8')
+          current = None
+          if exists('active.json'):
+              try: current=json.loads(readb('active.json').decode('utf-8'))
+              except Exception: current=None
+          if current != active:
+              batch_bucket_files(bucket_id, add=[(active_bytes,'active.json')], token=token)
+          if json.loads(readb('active.json').decode('utf-8')) != active:
+              raise SystemExit('active_readback_mismatch')
+
+          ev = {'bucket_id':bucket_id,'public':True,'build_id':build_id,'normalized_from_zip':normalized,
+                'canonical':493,'current_facts':31,'retrieval_documents':524,'active':'active.json'}
+          Path('/tmp/kb.json').write_text(json.dumps(ev), encoding='utf-8')
+          print(json.dumps(ev, ensure_ascii=False))
+          PY
+          } 2>&1 | tee /tmp/kb.log
+          echo 'kb_ok=1' >> "$GITHUB_OUTPUT"
+
+      - name: Deploy Customer AI using public bucket
+        id: deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          { python - <<'PY'
+          from pathlib import Path
+          p=Path('scripts/deploy_hf_direct.py')
+          text=p.read_text(encoding='utf-8')
+          old='        if not info.private:\n            raise SystemExit("kb_bucket_is_not_private")\n'
+          new='        if info.private:\n            raise SystemExit("kb_bucket_is_not_public")\n'
+          if old not in text:
+              raise SystemExit('deploy_private_guard_not_found')
+          p.write_text(text.replace(old,new,1),encoding='utf-8')
+          PY
+          python scripts/deploy_hf_direct.py --repo-root .
+          } 2>&1 | tee /tmp/deploy.log
+          echo 'deploy_ok=1' >> "$GITHUB_OUTPUT"
+
+      - name: Report result
+        if: always()
+        shell: bash
+        env:
+          DISCOVER_OK: ${{ steps.discover.outputs.discover_ok }}
+          KB_OK: ${{ steps.kb.outputs.kb_ok }}
+          DEPLOY_OK: ${{ steps.deploy.outputs.deploy_ok }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          python - <<'PY' >/tmp/report.txt
+          import json, os
+          lines=[f"PUBLIC_KB_AUTODISCOVER_STATUS={os.environ.get('JOB_STATUS','')}",
+                 f"DISCOVER_OK={os.environ.get('DISCOVER_OK','0')}",
+                 f"KB_OK={os.environ.get('KB_OK','0')}",
+                 f"DEPLOY_OK={os.environ.get('DEPLOY_OK','0')}"]
+          for path,label in [('/tmp/discover.json','DISCOVER'),('/tmp/kb.json','KB')]:
+              try:
+                  d=json.load(open(path,encoding='utf-8'))
+                  lines.append(label+'='+json.dumps(d,ensure_ascii=False,separators=(',',':')))
+              except Exception: pass
+          for path,label in [('/tmp/discover.log','DISCOVER_ERROR'),('/tmp/kb.log','KB_ERROR'),('/tmp/deploy.log','DEPLOY_ERROR')]:
+              try:
+                  text=open(path,encoding='utf-8',errors='replace').read().strip().splitlines()
+                  if text:
+                      lines.append(label+'='+text[-1][:800])
+              except Exception: pass
+          print('\n'.join(lines))
+          PY
+          python - <<'PY' >/tmp/result.json
+          import json
+          print(json.dumps({'body':open('/tmp/report.txt',encoding='utf-8').read()}))
+          PY
+          curl --fail-with-body --silent --show-error -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${REPOSITORY}/issues/${ISSUE_NUMBER}/comments" \
+            --data-binary @/tmp/result.json >/dev/null
